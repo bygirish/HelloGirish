@@ -4,20 +4,20 @@ export const routePath = {
         private: '/dashboard',
     },
     auth: {
-        login: 'login',
-        register: 'register',
+        login: '/login',
+        register: '/register',
     },
     dashboard: {
         dashboard: '/dashboard',
     },
     profile: {
-        viewProfile: (profileId: string) => `profile/${profileId}`,
-        editProfile: (profileId: string) => `profile/${profileId}/edit`,
+        viewProfile: (profileId: string) => `/profile/${profileId}`,
+        editProfile: (profileId: string) => `/profile/${profileId}/edit`,
     },
     blog: {
         blogListing: `blog`,
-        blogView: (id: string) => `blog/${id}`,
-        blogEdit:  (id: string) => `blog/${id}/edit`,
-        blogPreview: (id: string) => `blog/${id}/preview`,
+        blogView: (id: string) => `/blog/${id}`,
+        blogEdit:  (id: string) => `/blog/${id}/edit`,
+        blogPreview: (id: string) => `/blog/${id}/preview`,
     }
 }

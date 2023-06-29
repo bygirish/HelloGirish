@@ -3,6 +3,8 @@
 import { LeftSidebar, PrivateContent } from "@/components/molecules";
 import { PrivateHeader } from "@/components/molecules";
 import { useAuthContext } from "@/context/AuthContext";
+import Navigator from "@/navigation/navigator";
+
 import { routePath } from "@/navigation/routes";
 import { useRouter } from "next/navigation";
 import React from "react";
@@ -16,11 +18,12 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   } = authDetails;
  
   if(!userId || !sessionToken) {
-   router.push(routePath.home.public)
+    Navigator
+    Navigator().push(routePath.home.public);
   }
   return (
     <div>
-      <div>Private Layout</div>
+      {/* <div>Private Layout</div> */}
       <PrivateHeader />
       <div
         style={{

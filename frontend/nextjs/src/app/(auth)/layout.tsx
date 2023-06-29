@@ -2,6 +2,7 @@
 import { PublicContent } from "@/components/molecules";
 import { PublicHeader } from "@/components/molecules/PublicHeader";
 import { useAuthContext } from "@/context/AuthContext";
+import Navigator from "@/navigation/navigator";
 import { routePath } from "@/navigation/routes";
 import { useRouter } from "next/navigation";
 import React from "react";
@@ -15,7 +16,8 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   } = authDetails;
  
   if(userId && sessionToken) {
-   router.push(routePath.home.private)
+  //  router.push(routePath.home.private)
+   Navigator().push(routePath.home.private);
   } 
   return (
     <div>

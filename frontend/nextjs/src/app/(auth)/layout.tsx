@@ -1,6 +1,6 @@
 'use client'
-import { PublicContent } from "@/components/molecules";
-import { PublicHeader } from "@/components/molecules/PublicHeader";
+import { PublicContent } from "@/app/components/molecules";
+import { PublicHeader } from "@/app/components/molecules/PublicHeader";
 import { useAuthContext } from "@/context/AuthContext";
 import Navigator from "@/navigation/navigator";
 import { routePath } from "@/navigation/routes";

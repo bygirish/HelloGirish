@@ -1,4 +1,4 @@
-import { Footer } from "@/components/molecules";
+import { Footer } from "@/app/components/molecules";
 import "./globals.css";
 import { Inter } from "next/font/google";
 import { AppContextProvider } from "@/context/AppContext";

@@ -1,7 +1,7 @@
 'use client'
 
-import { LeftSidebar, PrivateContent } from "@/components/molecules";
-import { PrivateHeader } from "@/components/molecules";
+import { LeftSidebar, PrivateContent } from "@/app/components/molecules";
+import { PrivateHeader } from "@/app/components/molecules";
 import { useAuthContext } from "@/context/AuthContext";
 import Navigator from "@/navigation/navigator";
 

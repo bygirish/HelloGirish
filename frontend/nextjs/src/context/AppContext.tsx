@@ -1,6 +1,6 @@
 "use client";
 
-import { useContext } from "react";
+import { useContext, useState } from "react";
 import {
   AuthContext,
   AuthContextProvider,
@@ -8,15 +8,23 @@ import {
 } from "./AuthContext";
 import { ThemeProvider } from "@mui/material";
 import { theme } from "@/theme/theme";
+import { QueryClientProvider, QueryClient, HydrationBoundary, dehydrate } from "@tanstack/react-query";
+import getQueryClient from "@/lib/react-query/getQueryClient";
 
 export const AppContextProvider = ({
   children,
 }: {
   children: React.ReactNode;
 }) => {
+  const [client] = useState(
+    new QueryClient({ defaultOptions: { queries: { staleTime: 5000 } } })
+  );
+
   return (
-    <ThemeProvider theme={theme}>
-      <AuthContextProvider>{children}</AuthContextProvider>
-    </ThemeProvider>
+    <QueryClientProvider client={client}>
+      <ThemeProvider theme={theme}>
+        <AuthContextProvider>{children}</AuthContextProvider>
+      </ThemeProvider>
+    </QueryClientProvider>
   );
 };

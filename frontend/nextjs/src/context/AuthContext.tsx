@@ -7,8 +7,8 @@ import {
 } from "react";
 
 type AuthDataType = {
-    userId: string | undefined;
-    sessionToken: string | undefined;
+    userId?: string | undefined;
+    sessionToken?: string | undefined;
 };
 
 export type AuthContextState = {
@@ -18,8 +18,8 @@ export type AuthContextState = {
 };
 
 const initialAuthContextState = {
-  userId: undefined,
-  sessionToken: undefined,
+  userId: '123', //undefined,
+  sessionToken: '234', // undefined,
 };
 
 export const AuthContext = createContext<AuthContextState>(
@@ -38,8 +38,8 @@ export const AuthContextProvider = ({
     userId,
     sessionToken
   }: AuthDataType) => {
-    setUserId(userId);
-    setSessionToken(sessionToken)
+    userId && setUserId(userId);
+    sessionToken && setSessionToken(sessionToken)
   }
   
 

@@ -13,7 +13,7 @@ export type ConfigurableFormFieldDataType = {
   id: string;
   label: string;
   type?: string;
-  initalValue: string;
+  initialValue: string;
   validation: any; //StringSchema<string, AnyObject, undefined, "">; //(...args: any[]) => void;
   fieldType: (typeof ConfigurableFormFieldTypes)[keys];
   grid: {
@@ -40,10 +40,10 @@ export const ConfigurableForm = ({
   containerStyle,
   onValueChange
 }: Props) => {
-  const { initalValues, validations } = configureParams(fieldsData);
+  const { initialValues, validations } = configureParams(fieldsData);
 
   const formik = useFormik({
-    initialValues: initalValues,
+    initialValues: initialValues,
     validationSchema: yup.object(validations),
     onSubmit: (values, { setSubmitting }) => {
       onSubmitFormData(values, { setSubmitting });
@@ -86,22 +86,22 @@ export const ConfigurableForm = ({
 };
 
 const configureParams = (fieldsData: ConfigurableFormFieldDataType[]) => {
-  const initalValues: any = {};
+  const initialValues: any = {};
   const validations: any = {};
 
   fieldsData.forEach((fieldData: ConfigurableFormFieldDataType) => {
     if (Array.isArray(fieldData)) {
       const data = configureParams(fieldData);
-      Object.assign(initalValues, data.initalValues);
+      Object.assign(initialValues, data.initialValues);
       Object.assign(validations, data.validations);
     } else {
-      initalValues[fieldData.id] = fieldData.initalValue;
+      initialValues[fieldData.id] = fieldData.initialValue;
       validations[fieldData.id] = fieldData.validation;
     }
   });
 
   return {
-    initalValues,
+    initialValues,
     validations,
   };
 };

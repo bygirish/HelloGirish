@@ -8,6 +8,7 @@ import Navigator from "@/navigation/navigator";
 import { routePath } from "@/navigation/routes";
 import { useRouter } from "next/navigation";
 import React from "react";
+import { Box } from "@/app/components/atoms";
 
 export default function Layout({ children }: { children: React.ReactNode }) {
   const authDetails = useAuthContext();
@@ -27,8 +28,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       <div
         style={{
           width: "100%",
-          minHeight: '100vh',
-          maxHeight: "100%",
+          height: '100%',
           display: "flex",
           alignItems: 'flex-start',
           justifyContent: "flex-start",
@@ -36,7 +36,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         }}
       >
         <LeftSidebar />
-        <PrivateContent>{children}</PrivateContent>
+        <PrivateContent>{children}</PrivateContent>        
       </div>
     </div>
   );

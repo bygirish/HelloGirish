@@ -31,7 +31,7 @@ const steps = [
   },
 ]
 
-export default function EditProfile(props: Props) {
+export default function OnboardingData(props: Props) {
   const onSubmit = (values: any, { setSubmitting }: any) => {
     setTimeout(() => {
       alert(JSON.stringify(values, null, 2));

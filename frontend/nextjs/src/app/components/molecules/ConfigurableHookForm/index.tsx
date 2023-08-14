@@ -2,11 +2,11 @@
 import { Box, Button, Grid, SxProps, TextField } from "@/app/components/atoms";
 import { useForm, Controller } from "react-hook-form";
 import * as yup from "yup";
-import { yupResolver } from '@hookform/resolvers/yup';
+import { yupResolver } from "@hookform/resolvers/yup";
 import React from "react";
 
 export const ConfigurableFormFieldTypes = {
-  textinput: "text-input",
+  textInput: "text-input",
 } as const;
 
 type keys = keyof typeof ConfigurableFormFieldTypes;
@@ -15,7 +15,7 @@ export type ConfigurableFormFieldDataType = {
   id: string;
   label: string;
   type?: string;
-  initalValue: string;
+  initialValue: string;
   validation: any; //StringSchema<string, AnyObject, undefined, "">; //(...args: any[]) => void;
   fieldType: (typeof ConfigurableFormFieldTypes)[keys];
   grid: {
@@ -28,103 +28,94 @@ export type ConfigurableFormFieldDataType = {
 };
 
 type Props = {
+  formId?: string;
   fieldsData: ConfigurableFormFieldDataType[];
-  onSubmitFormData: (...args: any[]) => void;
+  onSubmitFormData?: (...args: any[]) => void;
   formSubmitType?: "submit" | "reset" | "button" | undefined;
   containerStyle?: SxProps;
   onValueChange?: (values: any) => void;
+  submitButtonText?: string;
 };
 
 export const ConfigurableHookForm = ({
+  formId,
   fieldsData,
   onSubmitFormData,
   formSubmitType,
   containerStyle,
-  onValueChange
+  onValueChange,
+  submitButtonText
 }: Props) => {
-  const { initalValues, validations } = configureParams(fieldsData);
+  const { initialValues, validations } = configureParams(fieldsData);
 
-
-  const { handleSubmit,  control, watch } = useForm({
-    defaultValues: initalValues,
+  const { handleSubmit, control, watch } = useForm({
+    defaultValues: initialValues,
     resolver: yupResolver(yup.object(validations)),
-  
+    values: initialValues
   });
 
-  const watchAllFields = watch(); 
+  const watchAllFields = watch();
 
   React.useEffect(() => {
     const subscription = watch((value, { name, type }) => {
       console.log(value, name, type);
-      onValueChange
+      onValueChange?.(value);
     });
     return () => subscription.unsubscribe();
   }, [watch, onValueChange]);
 
-  // const formik = useFormik({
-  //   initialValues: initalValues,
-  //   validationSchema: yup.object(validations),
-  //   onSubmit: (values, { setSubmitting }) => {
-  //     onSubmitFormData(values, { setSubmitting });
-  //   },
-  //   validate: (values: any) => {
-  //     onValueChange?.(values)
-  //   },
-  // });
-
   const onSubmit = (data: any) => {
-        onSubmitFormData(data);
+    onSubmitFormData?.(data);
   };
 
   return (
-    <Box
-      sx={containerStyle || {}}
-      
-    >
-      <form onSubmit={handleSubmit(onSubmit)} style={{width: '100%'}}>
-        <Grid container columnSpacing={2} justifyContent={'space-between'}>
-          {fieldsData.map((fieldData: ConfigurableFormFieldDataType) => {
+    <Box sx={containerStyle || {}} id={formId}>
+      <form onSubmit={handleSubmit(onSubmit)} style={{ width: "100%" }} >
+        <Grid container columnSpacing={2} justifyContent={"space-between"}>
+          {fieldsData.map((fieldData: ConfigurableFormFieldDataType, index) => {
             const grid = fieldData.grid || { xs: 12, md: 12, lg: 6, xl: 6 };
             return (
-              <Grid item key={fieldData.id} {...grid}>
-                <FieldRender fieldData={fieldData} control={control} />
+              <Grid item key={`${formId}-${fieldData.id}-grid`} {...grid}>
+                <FieldRender formId={formId} fieldData={fieldData} control={control} isFocused={index === 0}/>
               </Grid>
             );
           })}
         </Grid>
-        <Button
-          variant="contained"
-          type={formSubmitType}
-          sx={{
-            margin: "30px 0px",
-            width: "fit-content",
-          }}
-          color="primary"
-        >
-          {"Login"}
-        </Button>
+        {onSubmitFormData && (
+          <Button
+            variant="contained"
+            type={formSubmitType}
+            sx={{
+              margin: "30px 0px",
+              width: "fit-content",
+            }}
+            color="primary"
+          >
+            {submitButtonText ?? "Submit"}
+          </Button>
+        )}
       </form>
     </Box>
   );
 };
 
 const configureParams = (fieldsData: ConfigurableFormFieldDataType[]) => {
-  const initalValues: any = {};
+  const initialValues: any = {};
   const validations: any = {};
 
   fieldsData.forEach((fieldData: ConfigurableFormFieldDataType) => {
     if (Array.isArray(fieldData)) {
       const data = configureParams(fieldData);
-      Object.assign(initalValues, data.initalValues);
+      Object.assign(initialValues, data.initialValues);
       Object.assign(validations, data.validations);
     } else {
-      initalValues[fieldData.id] = fieldData.initalValue;
+      initialValues[fieldData.id] = fieldData.initialValue;
       validations[fieldData.id] = fieldData.validation;
     }
   });
 
   return {
-    initalValues,
+    initialValues,
     validations,
   };
 };
@@ -132,46 +123,40 @@ const configureParams = (fieldsData: ConfigurableFormFieldDataType[]) => {
 const FieldRender = ({
   fieldData,
   control,
+  formId,
+  isFocused
 }: {
   fieldData: ConfigurableFormFieldDataType;
+  formId?: string;
   control: any;
+  isFocused: boolean
 }) => {
-
-
-
-
   if (fieldData.fieldType === "text-input")
     return (
-      <Controller 
-      name={fieldData.id}
-      control={control}
-      render={({field, fieldState: {
-        error, isTouched
-      }}) => 
-        <TextField
-        key={`field_${fieldData.id}`}
-        id={fieldData.id}
-        // name={fieldData.id}
-        label={fieldData.label}
-        variant="standard"
-        autoFocus
-        sx={{
-          width: "100%",
-          margin: "20px 0px"
-        }}
-        type={fieldData.type}
-        // value={formik.values[fieldData.id]}
-        // onChange={formik.handleChange}
-        error={
-          Boolean(error?.message)
-        }
-        helperText={error?.message || ""}
-        {...field}
+      <Controller
+        key={`${formId}-field_${fieldData.id}-controller`}
+        name={fieldData.id}
+        control={control}
+        render={({ field, fieldState: { error, isTouched } }) => (
+          <TextField
+            key={`${formId}-field_${fieldData.id}`}
+            id={fieldData.id}
+            // name={fieldData.id}
+            label={fieldData.label}
+            variant="standard"
+            autoFocus={isFocused}
+            sx={{
+              width: "100%",
+              margin: "20px 0px",
+            }}
+            type={fieldData.type}
+            // value={formik.values[fieldData.id]}
+            // onChange={formik.handleChange}
+            error={Boolean(error?.message)}
+            helperText={error?.message || ""}
+            {...field}
+          />
+        )}
       />
-
-      }
-      
-      />
-
     );
 };

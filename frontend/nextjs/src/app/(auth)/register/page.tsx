@@ -105,7 +105,7 @@ const registerFormData: ConfigurableFormFieldDataType[] = [
     id: "emailid",
     label: "Email-id",
     type: "email",
-    initalValue: "abc123@gmail.com",
+    initialValue: "abc123@gmail.com",
     validation: yup
       .string()
       .email("Enter a valid email")
@@ -117,7 +117,7 @@ const registerFormData: ConfigurableFormFieldDataType[] = [
     id: "password",
     label: "Password",
     type: "password",
-    initalValue: "abcd1234",
+    initialValue: "abcd1234",
     validation: yup
       .string()
       .min(8, "Password should be of minimum 8 characters length")
@@ -129,7 +129,7 @@ const registerFormData: ConfigurableFormFieldDataType[] = [
     id: "confirm_password",
     label: "Confirm Password",
     type: "password",
-    initalValue: "abcd1234",
+    initialValue: "abcd1234",
     validation: yup
       .string()
       .min(8, "Password should be of minimum 8 characters length")

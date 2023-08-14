@@ -6,35 +6,57 @@ import {
   ConfigurableHookForm,
 } from "@/app/components/molecules/ConfigurableHookForm";
 import { MultiElementsContainer } from "@/app/components/molecules/MutiElementsContainer.tsx";
+import useProfileDataStore from "@/modules/data/store";
+import { ProfileDataElementsType } from "@/modules/data/types";
+import { getFormConfigurations } from "@/modules/data/configs";
 
 type Props = {
-  formId: string;
-  configurationData: ConfigurableFormFieldDataType[];
+  profileDataElementType: ProfileDataElementsType;
   isMultipleForms: boolean;
   titleElementMultipleForms?: string;
 };
 
 export default function DataFormRenderer(props: Props) {
   const {
-    formId,
+    profileDataElementType,
     isMultipleForms,
     titleElementMultipleForms,
-    configurationData,
   } = props;
 
-  const [elementDataSingleForm, setElementDataSingleForm] = useState([{}]);
-  const [elementsDataMultipleForms, setElementsDataMultipleForms] = useState([
-    {},
-  ]);
+  const {
+    profileData,
+    updateProfileData
+  } = useProfileDataStore((state: any) => {
+    return {
+      profileData: state.profileData,
+      updateProfileData: state.updateProfileData
+    }
+  });
+
+
+
+
+
+  const elementsData: any | any[] = profileData[profileDataElementType]
+
+  if(!elementsData) {
+    updateProfileData(profileDataElementType, isMultipleForms ? [{}] : {});
+    return null;
+  }
+
+
+
+  const setElementData = (updatedData: any) => {
+      console.log("updatedData", updatedData);
+      updateProfileData(profileDataElementType, updatedData);
+  }
 
   if (!isMultipleForms) {
-    const onValueChange = (updatedData: any) => {
-      setElementDataSingleForm(updatedData);
-    };
+    const configurationData = getFormConfigurations(profileDataElementType, profileData[profileDataElementType]);
 
     return (
       <ConfigurableHookForm
-        formId={formId}
+        formId={profileDataElementType}
         fieldsData={configurationData}
         formSubmitType="submit"
         containerStyle={{
@@ -45,32 +67,36 @@ export default function DataFormRenderer(props: Props) {
           border: "1px ridge #ccc",
           background: "#cccccc30",
         }}
-        onValueChange={onValueChange}
+        onValueChange={setElementData}
       />
     );
   }
 
+
   return (
       <MultiElementsContainer
         titleElement={titleElementMultipleForms}
-        formId={formId}
-        data={elementsDataMultipleForms}
+        formId={profileDataElementType}
+        data={elementsData}
         onDataUpdate={(data) => {
-          setElementsDataMultipleForms(data);
+          setElementData(data);
         }}
       >
-        {elementsDataMultipleForms.map((data: any, index) => {
+        {elementsData.map((data: any, index: number) => {
+
+
+          const configurationData = getFormConfigurations(profileDataElementType, data);
+          console.log("configurationData", configurationData);
+
           const onValueChange = (updatedData: any) => {
-            setElementsDataMultipleForms((data) => {
-              const newData = [...data];
-              newData[index] = updatedData;
-              return newData;
-            });
+            const newData = [...elementsData];
+            newData[index] = updatedData;
+            setElementData(newData);
           };
           return (
             <ConfigurableHookForm
               key={index}
-              formId={`${formId}-${index}`}
+              formId={`${profileDataElementType}-${index}`}
               fieldsData={configurationData}
               formSubmitType="submit"
               containerStyle={{

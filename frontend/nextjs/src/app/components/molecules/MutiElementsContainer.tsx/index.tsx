@@ -75,7 +75,7 @@ export const MultiElementsContainer = (props: Props) => {
               }}
             >
               
-              <Typography variant='h5'>{(titleElement && elementsData[index][titleElement])  ||  ''}&nbsp;</Typography>
+              <Typography variant='h5'>{(titleElement && elementsData?.[index]?.[titleElement])  ||  ''}&nbsp;</Typography>
               <Box>
               {elementsData.length > 1 && (
                 <IconButton onClick={onRemove(index)}>

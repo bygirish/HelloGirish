@@ -3,6 +3,8 @@ import {
   ConfigurableFormFieldTypes,
 } from "@/app/components/molecules/ConfigurableHookForm";
 import * as yup from "yup";
+import { ProfileDataElementsType } from "../types";
+import { ProfileDataElements } from "../constants";
 
 export const locationFormConfig = (
   initialData?: any
@@ -457,3 +459,29 @@ export const hobbyFormConfig = (
     },
   ];
 };
+
+
+export const getFormConfigurations = (dataType: ProfileDataElementsType, initialData: any): ConfigurableFormFieldDataType[] => {
+
+  // const existingData = profileData[dataType];
+
+  initialData = initialData || {};
+
+  switch (dataType) {
+    case ProfileDataElements.personal:
+      return personalInfoFormConfig(initialData);
+    case ProfileDataElements.education:
+      return educationFormConfig(initialData);
+    case ProfileDataElements.workExperience:
+      return workExperienceFormConfig(initialData);
+    case ProfileDataElements.hobbies:
+      return hobbyFormConfig(initialData);
+    case ProfileDataElements.references:
+      return companyReferencesFormConfig(initialData);
+    case ProfileDataElements.certificates:
+      return certificatesFormConfig(initialData);
+    default:
+      return [];
+  }
+
+}

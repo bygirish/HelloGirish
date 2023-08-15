@@ -124,7 +124,7 @@ function TabPanel(props: TabPanelProps) {
       {...other}
       style={{
         padding: 3, 
-        width: '50%'
+        width: '30%'
       }}
     >
       {value === index && (

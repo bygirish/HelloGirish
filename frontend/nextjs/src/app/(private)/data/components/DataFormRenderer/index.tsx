@@ -34,8 +34,7 @@ export default function DataFormRenderer(props: Props) {
   });
 
 
-
-
+  console.log("store data", profileData);
 
   const elementsData: any | any[] = profileData[profileDataElementType]
 
@@ -45,6 +44,7 @@ export default function DataFormRenderer(props: Props) {
   }
 
 
+ 
 
   const setElementData = (updatedData: any) => {
       console.log("updatedData", updatedData);

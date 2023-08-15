@@ -1,6 +1,14 @@
 "use client";
 import Navigator from "@/navigation/navigator";
-import { Box, Button, Grid, Step, StepLabel, Stepper, Typography } from "@/app/components/atoms/index";
+import {
+  Box,
+  Button,
+  Grid,
+  Step,
+  StepLabel,
+  Stepper,
+  Typography,
+} from "@/app/components/atoms/index";
 import * as yup from "yup";
 import React from "react";
 import { Form, Formik, useFormik } from "formik";
@@ -9,6 +17,8 @@ import {
   ConfigurableFormFieldDataType,
 } from "@/app/components/molecules/ConfigurableForm";
 import { ConfigurableHookForm } from "@/app/components/molecules/ConfigurableHookForm";
+import ProfileDataElement from "../components/ProfileDataElement";
+import { ProfileDataElements } from "@/modules/data/constants";
 
 type Props = {
   params: {
@@ -16,38 +26,35 @@ type Props = {
   };
 };
 
-const steps = [
+const onboardingSteps = [
   {
-    key: 'profile',
-    text: 'Profile'
+    key: ProfileDataElements.personal,
+    text: "Personal Information",
   },
   {
-    key: 'education',
-    text: 'Education'
+    key: ProfileDataElements.education,
+    text: "Education",
   },
   {
-    key: 'ork',
-    text: 'Work'
+    key: ProfileDataElements.workExperience,
+    text: "Work Experience",
   },
-]
+  {
+    key: ProfileDataElements.certificates,
+    text: "Certificates",
+  },
+  {
+    key: ProfileDataElements.references,
+    text: "References",
+  },
+  {
+    key: ProfileDataElements.hobbies,
+    text: "Hobbies",
+  },
+];
 
 export default function OnboardingData(props: Props) {
-  const onSubmit = (values: any, { setSubmitting }: any) => {
-    setTimeout(() => {
-      alert(JSON.stringify(values, null, 2));
-      //   setSubmitting(false);
-    }, 400);
-  };
-
-  const { id: profileId } = props.params;
-
-  const onValueChange = (values: any) => {
-    console.log(values);
-    const { emailid, confirm_password, password } = values;
-    if (password != confirm_password) {
-      console.log("password mismatch");
-    }
-  };
+  const activeStep = 1;
 
   return (
     <Box
@@ -56,99 +63,35 @@ export default function OnboardingData(props: Props) {
         flexDirection: "column",
         alignItems: "center",
         justifyContent: "center",
+        alignContent: "center",
+        width: "100%",
       }}
     >
-      <Typography variant="h2">{"Edit Profile"}</Typography>
-      {/* <ConfigurableForm
-        fieldsData={profileFormData()}
-        onSubmitFormData={onSubmit}
-        formSubmitType="submit"
-        containerStyle={{
-          display: "flex",
-          justifyContent: "center",
+      <Typography variant="h3">{"Complete Profile"}</Typography>
+      <Stepper
+        activeStep={activeStep}
+        alternativeLabel
+        sx={{
           width: "50%",
+          my: '50px'
         }}
-        onValueChange={onValueChange}
-      /> */}
-
-      <Stepper activeStep={0} alternativeLabel sx={{
-        width: "100%",
-      }}>
-        {steps.map((stepData) => {
-          console.log("stepData", stepData);
-
+      >
+        {onboardingSteps.map((stepData) => {
           return (
             <Step key={stepData.key}>
               <StepLabel>{stepData.text}</StepLabel>
             </Step>
-          )
-        })
-        } 
+          );
+        })}
       </Stepper>
-
-      <ConfigurableHookForm
-        fieldsData={profileFormData()}
-        onSubmitFormData={onSubmit}
-        formSubmitType="submit"
-        containerStyle={{
-          display: "flex",
-          justifyContent: "center",
+      <Box
+        sx={{
           width: "50%",
         }}
-        onValueChange={onValueChange}
-      />
+      >
+        <ProfileDataElement dataType={onboardingSteps[activeStep].key} />
+      </Box>
     </Box>
   );
 }
 
-const profileFormData = (
-  initialData?: any
-): ConfigurableFormFieldDataType[] => {
-  const { firstName, lastName, gender, dob, location } = initialData || {};
-
-  return [
-    {
-      id: "firstName",
-      label: "First Name",
-      initialValue: firstName || "",
-      validation: yup.string().required("First Name is required"),
-      fieldType: "text-input",
-      grid: { xs: 12, md: 12, lg: 6, xl: 4 },
-    },
-    {
-      id: "lastName",
-      label: "Last Name",
-      initialValue: lastName || "",
-      validation: yup.string().required("Last Name is required"),
-      fieldType: "text-input",
-      grid: { xs: 12, md: 12, lg: 6, xl: 6 },
-    },
-    {
-      id: "gender",
-      label: "Gender",
-      initialValue: gender || "",
-      validation: yup
-        .string()
-        .oneOf(["male", "female"], "Please specify a valid gender")
-        .required("Gender is required"),
-      fieldType: "text-input",
-      grid: { xs: 12, md: 12, lg: 12, xl: 12 },
-    },
-    {
-      id: "dob",
-      label: "Date of Birth",
-      initialValue: dob || "",
-      validation: yup.date().required("Date of Birth is required"),
-      fieldType: "text-input",
-      grid: { xs: 12, md: 12, lg: 6, xl: 6 },
-    },
-    {
-      id: "location",
-      label: "Location",
-      initialValue: location || "",
-      validation: yup.string().required("Location is required"),
-      fieldType: "text-input",
-      grid: { xs: 12, md: 12, lg: 6, xl: 6 },
-    },
-  ];
-};

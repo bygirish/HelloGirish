@@ -147,7 +147,7 @@ const FieldRender = ({
             autoFocus={isFocused}
             sx={{
               width: "100%",
-              margin: "20px 0px",
+              margin: "5px 0px",
             }}
             type={fieldData.type}
             // value={formik.values[fieldData.id]}

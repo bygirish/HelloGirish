@@ -20,11 +20,22 @@ import Raw from "@editorjs/raw";
 import Paragraph from "@editorjs/paragraph";
 import Codebox from "@bomdi/codebox";
 
+
 import { Box, Button } from "@/app/components/atoms";
+
+import { Upload } from "upload-js"
+
+const upload = Upload({ apiKey: "public_W142iAa9XenEJJxKTthSWgC14s7T" }); // Your real API key.
+
+// const filePath = "/uploads/example.jpg";
+// const fileUrl  = upload.url(filePath);
+
+
 
 // import gql from "graphql-tag";
 // import apolloClient from "../lib/apolloClient";
 export default function Editor() {
+  
   const editorRef = useRef<any>(null);
   const [editorData, setEditorData] = useState(null);
   const initEditor = () => {
@@ -35,13 +46,33 @@ export default function Editor() {
           class: Header,
           inlineToolbar: ["marker", "link"],
           config: {
-            placeholder: "Enter a header",
             levels: [1, 2, 3, 4, 5, 6],
-            defaultLevel: 3,
+            placeholder: "Enter a header",
+            defaultLevel: 1,
           },
           shortcut: "CMD+SHIFT+H",
         },
-        image: Image,
+        image: {
+          class: Image,
+          config: {
+            uploader: {
+              uploadByFile(file: File){
+                console.log("file before uploading", file, file.name);
+                return upload.uploadFile(file).then((res) => {
+                  console.log("result", res);
+                  return {
+                    success: 1,
+                    file: {
+                      url: res.fileUrl
+                      // any other image data you want to store, such as width, height, color, extension, etc
+                    }
+                  };
+                });
+              },
+            }
+          }
+
+        }, 
         code: Code,
         paragraph: {
           class: Paragraph,

@@ -24,6 +24,7 @@ import Codebox from "@bomdi/codebox";
 import { Box, Button } from "@/app/components/atoms";
 
 import { Upload } from "upload-js"
+import zIndex from "@mui/material/styles/zIndex";
 
 const upload = Upload({ apiKey: "public_W142iAa9XenEJJxKTthSWgC14s7T" }); // Your real API key.
 
@@ -260,18 +261,46 @@ export default function Editor() {
             bottom: 0,
             width: "100%",
             border: "1px ridge #ccc",
-            background: "#ffffff",
-            p: "10px 30px"
+            background: "#cccccc",
+            p: "20px 30px",
+            zIndex: 1
           }}
         >
           <Button
             variant={"contained"}
+            size={'large'}
             onClick={handleSave}
             sx={{
               width: "fit-content",
+              
             }}
           >
             {"Save"}
+          </Button>
+
+          <Button
+            variant={'outlined'}
+            size={'large'}
+            onClick={handleSave}
+            sx={{
+              width: "fit-content",
+              ml: '20px',
+              background: "#ffffff",
+            }}
+          >
+            {"Preview"}
+          </Button>
+
+          <Button
+            variant={'text'}
+            size={'large'}
+            onClick={handleSave}
+            sx={{
+              width: "fit-content",
+              ml: '20px'
+            }}
+          >
+            {"Cancel"}
           </Button>
         </Box>
       </Box>

@@ -9,6 +9,7 @@ import {
   ConfigurableFormFieldDataType,
 } from "../../components/molecules/ConfigurableForm";
 
+
 type Props = {};
 
 export default function Login(props: Props) {
@@ -62,7 +63,8 @@ export default function Login(props: Props) {
             alignItems: "center",
           }}
         >
-          <ConfigurableForm
+
+          {/* <ConfigurableForm
             fieldsData={loginFormData}
             onSubmitFormData={onSubmit}
             formSubmitType="submit"
@@ -71,7 +73,7 @@ export default function Login(props: Props) {
               justifyContent: 'center',
               width: '50%'
             }}
-          />
+          /> */}
 
           <Box sx={{ display: "flex", alignItems: "center" }}>
             <Typography variant="subtitle1">
@@ -98,7 +100,7 @@ const loginFormData: ConfigurableFormFieldDataType[] = [
       .email("Enter a valid email")
       .required("Email is required"),
     fieldType: "text-input",
-    grid: {xs: 12, md: 12, lg: 12, xl: 12}
+    grid: { xs: 12, md: 12, lg: 12, xl: 12 },
   },
   {
     id: "password",
@@ -110,6 +112,6 @@ const loginFormData: ConfigurableFormFieldDataType[] = [
       .min(8, "Password should be of minimum 8 characters length")
       .required("Password is required"),
     fieldType: "text-input",
-    grid: {xs: 12, md: 12, lg: 12, xl: 12}
+    grid: { xs: 12, md: 12, lg: 12, xl: 12 },
   },
 ];

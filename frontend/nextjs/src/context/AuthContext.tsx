@@ -18,8 +18,8 @@ export type AuthContextState = {
 };
 
 const initialAuthContextState = {
-  userId: '123', //undefined,
-  sessionToken: '234', // undefined,
+  userId: "sdfs", // undefined,
+  sessionToken: "sfs",// undefined,
 };
 
 export const AuthContext = createContext<AuthContextState>(

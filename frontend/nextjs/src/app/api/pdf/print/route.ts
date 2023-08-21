@@ -35,6 +35,7 @@ const printPDF = async () => {
   return pdf;
 };
 
+// This handler will accept the url and fileName params
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const fileName = "my-resume.pdf";

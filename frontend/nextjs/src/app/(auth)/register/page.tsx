@@ -1,40 +1,47 @@
 "use client";
 import { Box, Button, Grid, Typography } from "@/app/components/atoms/index";
 import * as yup from "yup";
-import React from "react";
+import React, { useState } from "react";
 import {
   ConfigurableFormFieldDataType,
-} from "../../components/molecules/ConfigurableForm";
-import {
   ConfigurableFormFieldTypes,
   ConfigurableHookForm,
 } from "@/app/components/molecules/ConfigurableHookForm";
 import Link from "next/link";
 import { routePath } from "@/navigation/routes";
+import { useAuthContext } from "@/context/AuthContext";
 
 type Props = {};
 
 type SignUpFormDataType = {
+  name: string;
   emailId: string;
   password: string;
   confirm_password: string;
 };
 
 export default function Register(props: Props) {
+  const { authData, setAuthDetails } = useAuthContext();
+  const [formErrors, setFormErrors] = useState<any[]>([]);
+
   const onSubmit = (data: SignUpFormDataType) => {
-    console.log(data);
+    console.log("onSubmit", data, authData);
+
+    const errors = validateFormData(data);
+    if (errors.length === 0) {
+      const { emailId } = data;
+      setAuthDetails({
+        userId: emailId,
+        sessionToken: "token-" + Math.random() * 10000,
+        isOnboarding: true,
+      });
+    } else {
+      setFormErrors(errors);
+    }
   };
 
   const onValueChange = (values: SignUpFormDataType) => {
     console.log(values);
-    // const {
-    //   emailid,
-    //   confirm_password,
-    //   password
-    // } = values;
-    // if(password != confirm_password) {
-    //   console.log("password mismatch");
-    // }
   };
 
   return (
@@ -80,7 +87,7 @@ export default function Register(props: Props) {
           }}
         >
           <ConfigurableHookForm
-            formId={`login-form`}
+            formId={`register-form`}
             fieldsData={registerFormData}
             formSubmitType="submit"
             containerStyle={{
@@ -91,6 +98,7 @@ export default function Register(props: Props) {
             onValueChange={onValueChange}
             onSubmitFormData={onSubmit}
             submitButtonText={"Sign Up"}
+            customErrors={formErrors}
           />
 
           <Box sx={{ display: "flex", alignItems: "center" }}>
@@ -107,12 +115,37 @@ export default function Register(props: Props) {
   );
 }
 
+const validateFormData = (data: SignUpFormDataType) => {
+  const { password, confirm_password } = data;
+  const errors = [];
+
+  if (password !== confirm_password) {
+    errors.push({
+      fieldId: "confirm_password",
+      type: "custom",
+      errorMessage: "Password does not match",
+    });
+  }
+
+  return errors;
+};
+
 const registerFormData: ConfigurableFormFieldDataType[] = [
+  {
+    id: "Name",
+    label: "Name",
+    type: 'text',
+    validation: yup
+      .string()
+      .required("Name is required"),
+    fieldType: ConfigurableFormFieldTypes.textInput,
+    grid: { xs: 12, md: 12, lg: 12, xl: 12 },
+  },
   {
     id: "emailId",
     label: "Email Id",
     type: "email",
-    initialValue: "abc123@gmail.com",
+    initialValue: "",
     validation: yup
       .string()
       .email("Enter a valid email")
@@ -124,7 +157,7 @@ const registerFormData: ConfigurableFormFieldDataType[] = [
     id: "password",
     label: "Password",
     type: "password",
-    initialValue: "abcd1234",
+    initialValue: "",
     validation: yup
       .string()
       .min(8, "Password should be of minimum 8 characters length")
@@ -136,7 +169,7 @@ const registerFormData: ConfigurableFormFieldDataType[] = [
     id: "confirm_password",
     label: "Confirm Password",
     type: "password",
-    initialValue: "abcd1234",
+    initialValue: "",
     validation: yup
       .string()
       .min(8, "Password should be of minimum 8 characters length")

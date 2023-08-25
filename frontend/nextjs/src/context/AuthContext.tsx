@@ -5,6 +5,7 @@ import { createContext, useContext, useState } from "react";
 type AuthDataType = {
   userId?: string | undefined;
   sessionToken?: string | undefined;
+  isOnboarding?: boolean;
 };
 
 export type AuthContextState = {

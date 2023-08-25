@@ -4,4 +4,4 @@ export * from './LeftSidebar';
 export * from './PrivateContent';
 export * from './PublicContent';
 export * from './Footer';
-export * from './ConfigurableForm'
+export * from './ConfigurableHookForm'

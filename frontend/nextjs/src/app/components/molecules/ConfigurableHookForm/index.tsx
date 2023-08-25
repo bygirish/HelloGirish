@@ -3,7 +3,7 @@ import { Box, Button, Grid, SxProps, TextField } from "@/app/components/atoms";
 import { useForm, Controller } from "react-hook-form";
 import * as yup from "yup";
 import { yupResolver } from "@hookform/resolvers/yup";
-import React from "react";
+import React, { useEffect } from "react";
 
 export const ConfigurableFormFieldTypes = {
   textInput: "text-input",
@@ -11,11 +11,18 @@ export const ConfigurableFormFieldTypes = {
 
 type keys = keyof typeof ConfigurableFormFieldTypes;
 
+type CustomFieldError = {
+  fieldId: string;
+  type: 'custom';
+  errorMessage: string; 
+}
+
 export type ConfigurableFormFieldDataType = {
   id: string;
   label: string;
-  type?: string;
-  initialValue: string;
+  type?: React.InputHTMLAttributes<unknown>['type'];
+  initialValue?: string;
+  placeholder?: string;
   validation: any; //StringSchema<string, AnyObject, undefined, "">; //(...args: any[]) => void;
   fieldType: (typeof ConfigurableFormFieldTypes)[keys];
   grid: {
@@ -35,6 +42,7 @@ type Props = {
   containerStyle?: SxProps;
   onValueChange?: (values: any) => void;
   submitButtonText?: string;
+  customErrors?: CustomFieldError[];
 };
 
 export const ConfigurableHookForm = ({
@@ -44,25 +52,37 @@ export const ConfigurableHookForm = ({
   formSubmitType,
   containerStyle,
   onValueChange,
-  submitButtonText
+  submitButtonText,
+  customErrors
 }: Props) => {
   const { initialValues, validations } = configureParams(fieldsData);
 
-  const { handleSubmit, control, watch } = useForm({
+  const { handleSubmit, control, watch, setError } = useForm({
     defaultValues: initialValues,
     resolver: yupResolver(yup.object(validations)),
-    values: initialValues
+    values: initialValues,
   });
 
-  const watchAllFields = watch();
 
-  React.useEffect(() => {
+  useEffect(() => {
     const subscription = watch((value, { name, type }) => {
       console.log(value, name, type);
       onValueChange?.(value);
     });
     return () => subscription.unsubscribe();
   }, [watch, onValueChange]);
+
+
+  useEffect(() => {
+    if(customErrors && customErrors.length > 0) {
+      customErrors.forEach((error) => {
+        setError(error.fieldId, {
+          type: error.type,
+          message: error.errorMessage,
+        })
+      })
+    }
+  }, [customErrors])
 
   const onSubmit = (data: any) => {
     onSubmitFormData?.(data);
@@ -137,26 +157,30 @@ const FieldRender = ({
         key={`${formId}-field_${fieldData.id}-controller`}
         name={fieldData.id}
         control={control}
-        render={({ field, fieldState: { error, isTouched } }) => (
-          <TextField
-            key={`${formId}-field_${fieldData.id}`}
-            id={fieldData.id}
-            // name={fieldData.id}
-            label={fieldData.label}
-            variant="standard"
-            autoFocus={isFocused}
-            sx={{
-              width: "100%",
-              margin: "5px 0px",
-            }}
-            type={fieldData.type}
-            // value={formik.values[fieldData.id]}
-            // onChange={formik.handleChange}
-            error={Boolean(error?.message)}
-            helperText={error?.message || ""}
-            {...field}
-          />
-        )}
+        render={({ field, fieldState: { error, isTouched } }) => {
+          return (
+            <TextField
+              key={`${formId}-field_${fieldData.id}`}
+              id={fieldData.id}
+              // name={fieldData.id}
+              label={fieldData.label}
+              variant="standard"
+              autoFocus={isFocused}
+              sx={{
+                width: "100%",
+                margin: "5px 0px",
+              }}
+              type={fieldData.type}
+              // value={formik.values[fieldData.id]}
+              // onChange={formik.handleChange}
+              error={Boolean(error?.message)}
+              helperText={error?.message || ""}
+              {...field}
+              placeholder={fieldData.placeholder}
+            />
+          )
+        } 
+}
       />
     );
 };

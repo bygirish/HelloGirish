@@ -2,10 +2,9 @@
 import { Box, Button, Grid, Typography } from "@/app/components/atoms/index";
 import * as yup from "yup";
 import React from "react";
+
 import {
   ConfigurableFormFieldDataType,
-} from "../../components/molecules/ConfigurableForm";
-import {
   ConfigurableFormFieldTypes,
   ConfigurableHookForm,
 } from "@/app/components/molecules/ConfigurableHookForm";
@@ -121,7 +120,7 @@ const loginFormData: ConfigurableFormFieldDataType[] = [
     id: "emailId",
     label: "Email Id",
     type: "email",
-    initialValue: "abc123@gmail.com",
+    initialValue: "",
     validation: yup
       .string()
       .email("Enter a valid email")
@@ -133,7 +132,7 @@ const loginFormData: ConfigurableFormFieldDataType[] = [
     id: "password",
     label: "Password",
     type: "password",
-    initialValue: "abcd1234",
+    initialValue: "",
     validation: yup
       .string()
       .min(8, "Password should be of minimum 8 characters length")

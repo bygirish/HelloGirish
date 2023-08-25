@@ -15,7 +15,6 @@ import Tooltip from "@mui/material/Tooltip";
 import MenuItem from "@mui/material/MenuItem";
 import AdbIcon from "@mui/icons-material/Adb";
 import { routePath } from "@/navigation/routes";
-import Navigator from "@/navigation/navigator";
 import Link from "next/link";
 
 const pages = [

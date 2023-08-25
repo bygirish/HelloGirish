@@ -3,25 +3,28 @@
 import { LeftSidebar, PrivateContent } from "@/app/components/molecules";
 import { PrivateHeader } from "@/app/components/molecules";
 import { useAuthContext } from "@/context/AuthContext";
-import Navigator from "@/navigation/navigator";
+import useNavigator from "@/navigation/navigator";
 
 import { routePath } from "@/navigation/routes";
 import { useRouter } from "next/navigation";
-import React from "react";
-import { Box } from "@/app/components/atoms";
+import React, { useEffect } from "react";
 
 export default function Layout({ children }: { children: React.ReactNode }) {
-  const authDetails = useAuthContext();
+  const { authData } = useAuthContext();
+  const { push } =  useNavigator();
   const router = useRouter();
   
   const {
    userId, sessionToken
-  } = authDetails;
+  } = authData;
  
-  if(!userId || !sessionToken) {
-    Navigator
-    Navigator().push(routePath.home.public);
-  }
+  useEffect(() => {
+    if(!userId || !sessionToken) {
+      push(routePath.home.public);
+    }
+  }, [userId, sessionToken, push]);
+
+
   return (
     <div>
       <PrivateHeader />

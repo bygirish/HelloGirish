@@ -2,23 +2,25 @@
 import { PublicContent } from "@/app/components/molecules";
 import { PublicHeader } from "@/app/components/molecules/PublicHeader";
 import { useAuthContext } from "@/context/AuthContext";
-import Navigator from "@/navigation/navigator";
+import useNavigator from "@/navigation/navigator";
 import { routePath } from "@/navigation/routes";
-import { useRouter } from "next/navigation";
-import React from "react";
+import React, { useEffect } from "react";
 
 export default function Layout({ children }: { children: React.ReactNode }) {
-    const authDetails = useAuthContext();
-  const router = useRouter();
+  const { authData } = useAuthContext();
+  const { push } = useNavigator();
   
   const {
    userId, sessionToken
-  } = authDetails;
+  } = authData;
+
+  useEffect(() => {
+    if(userId && sessionToken) {
+      push(routePath.home.private);
+     } 
+  }, [userId, sessionToken, push]);
  
-  if(userId && sessionToken) {
-  //  router.push(routePath.home.private)
-   Navigator().push(routePath.home.private);
-  } 
+
   return (
     <div>
       <PublicHeader />

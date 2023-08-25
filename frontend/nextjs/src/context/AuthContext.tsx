@@ -8,14 +8,16 @@ type AuthDataType = {
 };
 
 export type AuthContextState = {
-  userId?: string;
-  sessionToken?: string;
-  setAuthDetails?: (authData: AuthDataType) => void;
+  authData: AuthDataType;
+  setAuthDetails: (authData: AuthDataType) => void;
 };
 
 const initialAuthContextState = {
-  userId: undefined,
-  sessionToken: undefined,
+  authData: {
+    userId: undefined,
+    sessionToken: undefined,
+  },
+  setAuthDetails: () => {},
 };
 
 export const AuthContext = createContext<AuthContextState>(
@@ -27,23 +29,21 @@ export const AuthContextProvider = ({
 }: {
   children: React.ReactNode;
 }) => {
-  const [userId, setUserId] = useState<string | undefined>(
-    initialAuthContextState.userId
-  );
-  const [sessionToken, setSessionToken] = useState<string | undefined>(
-    initialAuthContextState.sessionToken
+  const [authData, setAuthData] = useState<AuthDataType>(
+    initialAuthContextState.authData
   );
 
-  const setAuthDetails = ({ userId, sessionToken }: AuthDataType) => {
-    userId && setUserId(userId);
-    sessionToken && setSessionToken(sessionToken);
+  const setAuthDetails = (authData: AuthDataType) => {
+    setAuthData && setAuthData((state) => ({
+      ...state,
+      ...authData,
+    }));
   };
 
   return (
     <AuthContext.Provider
       value={{
-        userId,
-        sessionToken,
+        authData,
         setAuthDetails,
       }}
     >

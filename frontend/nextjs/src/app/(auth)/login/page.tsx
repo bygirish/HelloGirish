@@ -1,26 +1,48 @@
 "use client";
-import Navigator from "@/navigation/navigator";
 import { Box, Button, Grid, Typography } from "@/app/components/atoms/index";
 import * as yup from "yup";
 import React from "react";
-import { Form, Formik, useFormik } from "formik";
 import {
-  ConfigurableForm,
   ConfigurableFormFieldDataType,
 } from "../../components/molecules/ConfigurableForm";
-// import { useMutation } from "@tanstack/react-query";
-
+import {
+  ConfigurableFormFieldTypes,
+  ConfigurableHookForm,
+} from "@/app/components/molecules/ConfigurableHookForm";
+import Link from "next/link";
+import { useAuthContext } from "@/context/AuthContext";
+import { routePath } from "@/navigation/routes";
 
 type Props = {};
 
+type LoginFormDataType = {
+  emailId: string;
+  password: string;
+};
+
 export default function Login(props: Props) {
 
+  const {authData, setAuthDetails } = useAuthContext();
 
-  const onSubmit = (values: any, { setSubmitting }: any) => {
-    setTimeout(() => {
-      alert(JSON.stringify(values, null, 2));
-      //   setSubmitting(false);
-    }, 400);
+
+  const onSubmit = (data: LoginFormDataType) => {
+    
+    console.log("onSubmit", data, authData);
+
+    const {
+      emailId,
+      password
+    } = data;
+
+    setAuthDetails({
+      userId: emailId,
+      sessionToken: 'token-'+Math.random()*10000,
+    })
+
+  };
+
+  const onValueChange = (data: LoginFormDataType) => {
+    console.log("onValueChange: ", data);
   };
 
   return (
@@ -54,7 +76,6 @@ export default function Login(props: Props) {
           }}
         >
           <Typography variant="h3">{"Welcome to Blog Builder"}</Typography>
-          {/* <Typography variant="h5">{"by Girish"}</Typography> */}
         </Grid>
         <Grid
           item
@@ -66,25 +87,28 @@ export default function Login(props: Props) {
             alignItems: "center",
           }}
         >
-
-          {/* <ConfigurableForm
+          <ConfigurableHookForm
+            formId={`login-form`}
             fieldsData={loginFormData}
-            onSubmitFormData={onSubmit}
             formSubmitType="submit"
             containerStyle={{
-              display: 'flex',
-              justifyContent: 'center',
-              width: '50%'
+              display: "flex",
+              justifyContent: "center",
+              width: "100%",
             }}
-          /> */}
+            onValueChange={onValueChange}
+            onSubmitFormData={onSubmit}
+            submitButtonText={'Login'}
+          />
 
           <Box sx={{ display: "flex", alignItems: "center" }}>
             <Typography variant="subtitle1">
               {"Don't have account? Please"}
             </Typography>
-            <Button variant="text" color="primary">
-              {"Sign up"}
+            <Button variant='text'>
+              <Link href={routePath.auth.register}>{"Sign up"}</Link>
             </Button>
+            
           </Box>
         </Grid>
       </Grid>
@@ -94,15 +118,15 @@ export default function Login(props: Props) {
 
 const loginFormData: ConfigurableFormFieldDataType[] = [
   {
-    id: "emailid",
-    label: "Email-id",
+    id: "emailId",
+    label: "Email Id",
     type: "email",
     initialValue: "abc123@gmail.com",
     validation: yup
       .string()
       .email("Enter a valid email")
       .required("Email is required"),
-    fieldType: "text-input",
+    fieldType: ConfigurableFormFieldTypes.textInput,
     grid: { xs: 12, md: 12, lg: 12, xl: 12 },
   },
   {
@@ -114,7 +138,7 @@ const loginFormData: ConfigurableFormFieldDataType[] = [
       .string()
       .min(8, "Password should be of minimum 8 characters length")
       .required("Password is required"),
-    fieldType: "text-input",
+    fieldType: ConfigurableFormFieldTypes.textInput,
     grid: { xs: 12, md: 12, lg: 12, xl: 12 },
   },
 ];

@@ -1,29 +1,18 @@
 import { useRouter, usePathname } from "next/navigation";
 
-const Navigator = () => {
+export default function useNavigator(){
+  const router = useRouter();
+  const { back, forward, refresh, push, replace, prefetch } = router;
 
-    const router = useRouter();
-    const {
-         back,
-         forward,
-         refresh,
-         push,
-         replace,
-         prefetch
-    } = router;
+  const currentPathName = usePathname();
 
-    const currentPathName  = usePathname();
-
-    return ({
-        back,
-        forward,
-        refresh,
-        push,
-        replace,
-        prefetch,
-        currentPathName
-    });
-}
-
-
-export default Navigator;
+  return {
+    back,
+    forward,
+    refresh,
+    push,
+    replace,
+    prefetch,
+    currentPathName,
+  };
+};

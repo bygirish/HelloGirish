@@ -1,11 +1,9 @@
 "use client";
-import Navigator from "@/navigation/navigator";
+
 import { Button } from "@mui/material";
-// import puppeteer from "puppeteer";
 import React from "react";
 
 type Props = {};
-
 
 export default function Dashboard(props: Props) {
   // console.log("props", props, Navigator().currentPathName);
@@ -21,7 +19,7 @@ export default function Dashboard(props: Props) {
       <div>Dashboard</div>
       <Button
         onClick={() => {
-          printPDF();
+          // printPDF();
         }}
       >
         Print PDF

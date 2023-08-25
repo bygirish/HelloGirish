@@ -7,7 +7,7 @@ import {
 } from "@/app/components/atoms/index";
 import { ProfileDataElements } from "@/modules/data/constants";
 import React from "react";
-import ProfileDataElement from "../components/ProfileDataElement";
+import ProfileDataElement from "@/modules/data/components/ProfileDataElement";
 
 type Props = {
   params: {

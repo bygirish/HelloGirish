@@ -67,6 +67,7 @@ export const ConfigurableHookForm = ({
   const onSubmit = (data: any) => {
     onSubmitFormData?.(data);
   };
+  console.log("ConfigurableHookForm data", formId, fieldsData)
 
   return (
     <Box sx={containerStyle || {}} id={formId}>

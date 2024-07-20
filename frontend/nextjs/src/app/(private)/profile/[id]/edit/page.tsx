@@ -2,7 +2,7 @@
 import Navigator from "@/navigation/navigator";
 import { Box, Button, Grid, Step, StepLabel, Stepper, Typography } from "@/app/components/atoms/index";
 import * as yup from "yup";
-import React from "react";
+import React, { useState } from "react";
 import { Form, Formik, useFormik } from "formik";
 import {
   ConfigurableForm,
@@ -16,30 +16,14 @@ type Props = {
   };
 };
 
-const steps = [
-  {
-    key: 'profile',
-    text: 'Profile'
-  },
-  {
-    key: 'education',
-    text: 'Education'
-  },
-  {
-    key: 'ork',
-    text: 'Work'
-  },
-]
+
 
 export default function EditProfile(props: Props) {
-  const onSubmit = (values: any, { setSubmitting }: any) => {
-    setTimeout(() => {
-      alert(JSON.stringify(values, null, 2));
-      //   setSubmitting(false);
-    }, 400);
-  };
 
-  const { id: profileId } = props.params;
+
+  const [currentStep, setCurrentStep] = useState<number>(0);
+
+  const [capturedFormData, setCapturedFormData] = useState<any[]>([]);
 
   const onValueChange = (values: any) => {
     console.log(values);
@@ -49,6 +33,20 @@ export default function EditProfile(props: Props) {
     }
   };
 
+  const onSubmit = (values: any) => {
+
+    setTimeout(() => {
+      console.log("values", values);
+      // alert(JSON.stringify(values, null, 2));
+      //   setSubmitting(false);
+      if(currentStep < steps.length) {
+        setCapturedFormData([...capturedFormData, values]);
+        setCurrentStep(currentStep+1);
+      }
+    }, 400);
+  };
+
+  console.log(JSON.stringify(capturedFormData, null));
   return (
     <Box
       sx={{
@@ -71,7 +69,7 @@ export default function EditProfile(props: Props) {
         onValueChange={onValueChange}
       /> */}
 
-      <Stepper activeStep={0} alternativeLabel sx={{
+      <Stepper activeStep={currentStep} alternativeLabel sx={{
         width: "100%",
       }}>
         {steps.map((stepData) => {
@@ -87,7 +85,9 @@ export default function EditProfile(props: Props) {
       </Stepper>
 
       <ConfigurableHookForm
-        fieldsData={profileFormData()}
+        key={steps[currentStep].key}
+        formId={steps[currentStep].key}
+        fieldsData={steps[currentStep].data}
         onSubmitFormData={onSubmit}
         formSubmitType="submit"
         containerStyle={{
@@ -100,6 +100,9 @@ export default function EditProfile(props: Props) {
     </Box>
   );
 }
+
+
+
 
 const profileFormData = (
   initialData?: any
@@ -138,7 +141,8 @@ const profileFormData = (
       id: "dob",
       label: "Date of Birth",
       initialValue: dob || "",
-      validation: yup.date().required("Date of Birth is required"),
+      // validation: yup.date().required("Date of Birth is required"),\
+      validation: yup.string().required("Date of Birth is required"),
       fieldType: "text-input",
       grid: { xs: 12, md: 12, lg: 6, xl: 6 },
     },
@@ -150,5 +154,69 @@ const profileFormData = (
       fieldType: "text-input",
       grid: { xs: 12, md: 12, lg: 6, xl: 6 },
     },
+    
   ];
 };
+
+
+const educationFormData = (
+  initialData?: any
+): ConfigurableFormFieldDataType[] => {
+  const { college, location, course, score,  } = initialData || {};
+
+  return [
+    {
+      id: "college",
+      label: "College Name",
+      initialValue: college || "",
+      validation: yup.string().required("College Name is required"),
+      fieldType: "text-input",
+      grid: { xs: 12, md: 12, lg: 12, xl: 12 },
+    },
+    {
+      id: "location",
+      label: "Location",
+      initialValue: location || "",
+      validation: yup.string().required("Location is required"),
+      fieldType: "text-input",
+      grid: { xs: 12, md: 12, lg: 6, xl: 6 },
+    },
+    {
+      id: "course",
+      label: "Course Name",
+      initialValue: course || "",
+      validation: yup
+        .string()
+        .required("Course Name is required"),
+      fieldType: "text-input",
+      grid: { xs: 12, md: 12, lg: 12, xl: 12 },
+    },
+    {
+      id: "score",
+      label: "Score",
+      initialValue: score || "",
+      validation: yup.string().required("Score is required"),
+      fieldType: "text-input",
+      grid: { xs: 12, md: 12, lg: 6, xl: 6 },
+    },
+    
+  ];
+};
+
+const steps = [
+  {
+    key: 'profile',
+    text: 'Profile',
+    data: profileFormData(),
+  },
+  {
+    key: 'education',
+    text: 'Education',
+    data: educationFormData(),
+  },
+  {
+    key: 'work',
+    text: 'Work',
+    data: profileFormData(),
+  },
+]

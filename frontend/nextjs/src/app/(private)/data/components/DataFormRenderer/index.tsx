@@ -1,11 +1,11 @@
 "use client";
-import { Box } from "@/app/components/atoms/index";
+import { Box } from "@/components/atoms/index";
 import React, { useState } from "react";
 import {
   ConfigurableFormFieldDataType,
   ConfigurableHookForm,
-} from "@/app/components/molecules/ConfigurableHookForm";
-import { MultiElementsContainer } from "@/app/components/molecules/MutiElementsContainer.tsx";
+} from "@/components/molecules/ConfigurableHookForm";
+import { MultiElementsContainer } from "@/components/molecules/MutiElementsContainer.tsx";
 import useProfileDataStore from "@/modules/data/store";
 import { ProfileDataElementsType } from "@/modules/data/types";
 import { getFormConfigurations } from "@/modules/data/configs";

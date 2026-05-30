@@ -1,14 +1,14 @@
 'use client'
 
-import { LeftSidebar, PrivateContent } from "@/app/components/molecules";
-import { PrivateHeader } from "@/app/components/molecules";
+import { LeftSidebar, PrivateContent } from "@/components/molecules";
+import { PrivateHeader } from "@/components/molecules";
 import { useAuthContext } from "@/context/AuthContext";
 import Navigator from "@/navigation/navigator";
 
 import { routePath } from "@/navigation/routes";
 import { useRouter } from "next/navigation";
 import React from "react";
-import { Box } from "@/app/components/atoms";
+import { Box } from "@/components/atoms";
 
 export default function Layout({ children }: { children: React.ReactNode }) {
   const authDetails = useAuthContext();

@@ -1,7 +1,7 @@
 import {
   ConfigurableFormFieldDataType,
   ConfigurableFormFieldTypes,
-} from "@/app/components/molecules/ConfigurableHookForm";
+} from "@/components/molecules/ConfigurableHookForm";
 import * as yup from "yup";
 import { ProfileDataElementsType } from "../types";
 import { ProfileDataElements } from "../constants";

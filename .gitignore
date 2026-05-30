@@ -1,0 +1,10 @@
+# macOS
+.DS_Store
+**/.DS_Store
+
+# Editor temp files
+~$*
+
+# Node
+node_modules/
+.next/

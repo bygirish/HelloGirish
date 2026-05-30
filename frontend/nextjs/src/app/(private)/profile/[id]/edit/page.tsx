@@ -1,14 +1,14 @@
 "use client";
 import Navigator from "@/navigation/navigator";
-import { Box, Button, Grid, Step, StepLabel, Stepper, Typography } from "@/app/components/atoms/index";
+import { Box, Button, Grid, Step, StepLabel, Stepper, Typography } from "@/components/atoms/index";
 import * as yup from "yup";
 import React, { useState } from "react";
 import { Form, Formik, useFormik } from "formik";
 import {
   ConfigurableForm,
   ConfigurableFormFieldDataType,
-} from "@/app/components/molecules/ConfigurableForm";
-import { ConfigurableHookForm } from "@/app/components/molecules/ConfigurableHookForm";
+} from "@/components/molecules/ConfigurableForm";
+import { ConfigurableHookForm } from "@/components/molecules/ConfigurableHookForm";
 
 type Props = {
   params: {

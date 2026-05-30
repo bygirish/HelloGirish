@@ -8,15 +8,15 @@ import {
   StepLabel,
   Stepper,
   Typography,
-} from "@/app/components/atoms/index";
+} from "@/components/atoms/index";
 import * as yup from "yup";
 import React from "react";
 import { Form, Formik, useFormik } from "formik";
 import {
   ConfigurableForm,
   ConfigurableFormFieldDataType,
-} from "@/app/components/molecules/ConfigurableForm";
-import { ConfigurableHookForm } from "@/app/components/molecules/ConfigurableHookForm";
+} from "@/components/molecules/ConfigurableForm";
+import { ConfigurableHookForm } from "@/components/molecules/ConfigurableHookForm";
 import ProfileDataElement from "../components/ProfileDataElement";
 import { ProfileDataElements } from "@/modules/data/constants";
 

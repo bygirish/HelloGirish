@@ -1,4 +1,4 @@
-import CreateBlog from "@/app/components/molecules/CustomEditor/CreateBlog";
+import CreateBlog from "@/components/molecules/CustomEditor/CreateBlog";
 import React from "react";
 
 type Props = {

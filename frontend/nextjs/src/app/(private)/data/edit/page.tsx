@@ -4,7 +4,7 @@ import {
   Tab,
   Tabs,
   Typography,
-} from "@/app/components/atoms/index";
+} from "@/components/atoms/index";
 import { ProfileDataElements } from "@/modules/data/constants";
 import React from "react";
 import ProfileDataElement from "../components/ProfileDataElement";

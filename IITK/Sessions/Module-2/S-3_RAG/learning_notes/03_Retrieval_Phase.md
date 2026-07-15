@@ -342,6 +342,8 @@ BM25 (Best Match 25) is the industry-standard sparse retrieval function that imp
 1. **Saturating term frequency** — the score doesn't grow linearly with TF; diminishing returns kick in
 2. **Normalising for document length** — a term appearing 5 times in a 100-word document is more significant than 5 times in a 1000-word document
 
+
+
 ### The BM25 Formula (RSV — Retrieval Status Value)
 
 **Step 1: Simple IDF baseline**
@@ -396,6 +398,78 @@ Without saturation (raw TF), a document that mentions "machine learning" 100 tim
 These are empirically validated defaults across many benchmarks.
 
 > **Learning Thought:** BM25 is the default retrieval algorithm in Elasticsearch, Apache Solr, and PyTerrier. In LLM-era RAG systems, it remains competitive with dense methods for keyword-heavy domains. Understanding why TF saturation and length normalisation matter is the conceptual leap from TF-IDF to BM25.
+
+
+# TF-IDF vs BM-25 explanation with Examples vectors
+
+
+**TF-IDF** and **BM25** are bag-of-words algorithms that score how well a document matches a query. TF-IDF calculates linear importance based on word counts and rarity. BM25 improves this by capping the influence of repeated words (**saturation**) and penalizing overly long documents to prevent keyword stuffing (**length normalization**).
+
+### The Toy Corpus
+
+To understand how these vectors look, let's use a toy corpus of three documents and search for the query: **"cat hat"**
+
+*   **Document 1 (Doc 1):** "The cat in the hat sat on the mat." (9 words)
+*   **Document 2 (Doc 2):** "The cat and the dog sat on the rug." (9 words)
+*   **Document 3 (Doc 3):** "The cat, the cat, the cat in the giant hat!" (10 words)
+
+---
+
+### Part 1: How TF-IDF Vectors Look & Compute
+
+A TF-IDF vector represents a document as a list of numbers—one for every unique word in your vocabulary. The formula is:
+
+$$\text{TF-IDF} = \text{Term Frequency (TF)} \times \text{Inverse Document Frequency (IDF)}$$
+
+*   **TF:** $\frac{\text{count of term}}{\text{total words in doc}}$
+*   **IDF:** $\log(\frac{\text{Total Documents}}{\text{Docs containing term}})$
+
+**Vocabulary:** `['cat', 'hat', 'sat']`
+
+#### TF-IDF Vector Generation
+*   **Doc 1 Vector:** `[0.06, 0.06, 0.06]`
+*   **Doc 2 Vector:** `[0.03, 0.00, 0.03]`
+*   **Doc 3 Vector:** `[0.18, 0.06, 0.00]`
+
+#### Scoring
+To rank documents for the query "cat hat", we sum the TF-IDF scores for the query words. 
+*   **Doc 1 Score:** $0.06 \text{ (cat)} + 0.06 \text{ (hat)} = \mathbf{0.12}$
+*   **Doc 2 Score:** $0.03 \text{ (cat)} + 0.00 \text{ (hat)} = \mathbf{0.03}$
+*   **Doc 3 Score:** $0.18 \text{ (cat)} + 0.06 \text{ (hat)} = \mathbf{0.24}$
+
+**Limitation:** Doc 3 repeats the word "cat" three times, scoring highly simply because it has a high raw count. 
+
+---
+
+### Part 2: How BM25 Improves It
+
+BM25 does not just count words. It refines the score for each query term using specific variables:
+1.  **$k_1$ (Saturation):** Controls how quickly the relevance of a word maxes out. If a keyword appears 2 times, it’s relevant. Appearing 20 times doesn’t make it 10x more relevant. (Typically set around 1.2 to 2.0).
+2.  **$b$ (Length Normalization):** Penalizes long documents. If a document is exceptionally long, it naturally accumulates higher word counts; $b$ divides the term counts by the document length. (Typically set at 0.75).
+
+#### BM25 Vector Generation
+*(Using standard parameters: $k_1 = 1.2$, $b = 0.75$. IDF computes similarly to TF-IDF but uses a modified logarithmic ratio)*
+
+*   **Doc 1 Vector:** `[0.85, 0.85, 0.62]`
+*   **Doc 2 Vector:** `[0.46, 0.00, 0.62]`
+*   **Doc 3 Vector:** `[1.32, 0.85, 0.00]`
+
+#### Scoring
+Because of term saturation ($k_1$), repeating "cat" in Doc 3 no longer causes its relevance to scale out of control linearly.
+*   **Doc 1 Score:** $0.85 + 0.85 = \mathbf{1.70}$
+*   **Doc 2 Score:** $0.46 + 0.00 = \mathbf{0.46}$
+*   **Doc 3 Score:** $1.32 + 0.85 = \mathbf{2.17}$
+
+---
+
+### Summary of Differences
+
+| Feature | TF-IDF | BM25 |
+| :--- | :--- | :--- |
+| **Word Repetition** | Scores grow **linearly** as words are repeated. | Scores **saturate** (diminishing returns). |
+| **Document Length** | Does not account for it; longer documents score higher. | Adjusts for length and penalizes overly long text. |
+| **Search Weights** | Treats every occurrence of a word equally. | The 1st keyword matters immensely; the 50th barely moves the needle. |
+
 
 ---
 

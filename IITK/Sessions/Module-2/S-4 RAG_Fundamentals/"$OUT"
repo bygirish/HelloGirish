@@ -1,0 +1,662 @@
+=== CELL 36 [markdown] ===
+## 6 · Chunking experiments — measure, don't guess
+
+We now turn the table above into numbers. For each strategy we: chunk the corpus → embed every
+chunk → build an **exact** index → run all evaluation questions → and check whether a **gold
+evidence** passage shows up in the top-k.
+
+A retrieved chunk counts as **relevant** to a question when it comes from the right paper *and*
+shares a substantial fraction of its words with one of that question's gold evidence paragraphs
+(overlap coefficient ≥ 0.5). This tolerates the fact that chunk boundaries rarely line up exactly
+with evidence boundaries. Two metrics:
+
+- **Hit@k** — fraction of questions with at least one relevant chunk in the top-k (can the system
+  *find* the answer at all?).
+- **MRR** — mean reciprocal rank of the first relevant chunk (does it find it *near the top*?).
+
+=== CELL 37 [code] ===
+import faiss
+
+_word_re = re.compile(r"[^a-z0-9 ]+")
+def toks(t: str) -> set:
+    return set(_word_re.sub(" ", t.lower()).split())
+
+def overlap_coef(a: set, b: set) -> float:
+    if not a or not b: return 0.0
+    return len(a & b) / min(len(a), len(b))
+
+def is_relevant(chunk: Document, q: dict, thr: float = 0.5) -> bool:
+    """Relevant = same paper AND high word-overlap with any gold evidence paragraph."""
+    if chunk.metadata.get("paper_id") != q["paper_id"]:
+        return False
+    ct = toks(chunk.page_content)
+    return any(overlap_coef(toks(ev), ct) >= thr for ev in q["evidence"])
+
+def score_retrieval(retrieved_per_q: List[List[Document]], queries: List[dict], k: int) -> dict:
+    hits, rrs = [], []
+    for retrieved, q in zip(retrieved_per_q, queries):
+        flags = [is_relevant(c, q) for c in retrieved[:k]]
+        hits.append(1.0 if any(flags) else 0.0)
+        rr = next((1.0 / r for r, f in enumerate(flags, 1) if f), 0.0)
+        rrs.append(rr)
+    return {"hit@k": float(np.mean(hits)), "mrr": float(np.mean(rrs))}
+
+=== CELL 38 [code] ===
+def embed_and_index(chunks: List[Document], embedder: Embedder):
+    """Embed chunk texts and build an exact (Flat inner-product) index."""
+    t0 = time.perf_counter()
+    vecs = embedder.embed([c.page_content for c in chunks], show_progress=False)
+    embed_s = time.perf_counter() - t0
+    index = faiss.IndexFlatIP(embedder.dim)
+    index.add(vecs)
+    return index, vecs, embed_s
+
+def retrieve(index, embedder, queries: List[dict], chunks: List[Document], k: int):
+    qv = embedder.embed([q["question"] for q in queries])
+    _, I = index.search(qv, k)
+    return [[chunks[i] for i in row] for row in I]
+
+=== CELL 39 [code] ===
+# The configurations to compare. (Semantic chunking embeds sentences, so it is the slow one —
+# on CPU this whole cell can take a few minutes; on a T4 it is quick.)
+chunking_configs = {
+    "fixed-400/80":     fixed_splitter(400, 80),
+    "fixed-800/160":    fixed_splitter(800, 160),
+    "recursive-400/80": recursive_splitter(400, 80),
+    "recursive-800/160":recursive_splitter(800, 160),
+    "token-128/24":     token_splitter(128, 24),
+    "sliding-5/3":      sliding_splitter(5, 3),
+    "semantic-pct90":   semantic_splitter("percentile", 90),
+}
+
+results, store = [], {}
+for name, splitter in chunking_configs.items():
+    chunks = chunk_corpus(splitter, name)
+    index, vecs, embed_s = embed_and_index(chunks, EMB)
+    retrieved = retrieve(index, EMB, EVALSET, chunks, CFG.eval_k)
+    sc = score_retrieval(retrieved, EVALSET, CFG.eval_k)
+    avg_len = float(np.mean([len(c.page_content) for c in chunks]))
+    results.append({"strategy": name, "chunks": len(chunks), "avg_chars": round(avg_len),
+                    f"hit@{CFG.eval_k}": round(sc["hit@k"], 3), "MRR": round(sc["mrr"], 3),
+                    "embed_s": round(embed_s, 1)})
+    store[name] = {"chunks": chunks, "vecs": vecs}
+    print(f"✓ {name:18s} {len(chunks):5d} chunks  hit@{CFG.eval_k}={sc['hit@k']:.3f}  MRR={sc['mrr']:.3f}")
+
+res_df = pd.DataFrame(results).sort_values(f"hit@{CFG.eval_k}", ascending=False).reset_index(drop=True)
+res_df
+
+=== CELL 40 [code] ===
+# Visualize the trade-offs.
+fig, ax = plt.subplots(1, 2, figsize=(12, 4.2))
+order = res_df["strategy"]
+ax[0].barh(order, res_df[f"hit@{CFG.eval_k}"], color="#4C78A8")
+ax[0].set_title(f"Hit@{CFG.eval_k} by chunking strategy"); ax[0].invert_yaxis(); ax[0].set_xlim(0, 1)
+ax[1].scatter(res_df["avg_chars"], res_df["MRR"], s=70, color="#E45756")
+for _, r in res_df.iterrows():
+    ax[1].annotate(r["strategy"], (r["avg_chars"], r["MRR"]), fontsize=8,
+                   xytext=(4, 4), textcoords="offset points")
+ax[1].set_xlabel("avg chunk size (chars)"); ax[1].set_ylabel("MRR"); ax[1].set_title("Chunk size vs. ranking quality")
+plt.tight_layout(); plt.show()
+
+=== CELL 41 [markdown] ===
+### 6.1 · Pick a winner and freeze it
+
+We select the configuration with the best Hit@k (ties broken by MRR) and reuse its chunks and
+vectors for the rest of the notebook — no re-embedding. In practice the recursive splitter at a
+moderate size, or sliding-window when recall matters most, tends to win; semantic chunking is
+strongest when documents have sharp topic shifts but costs the most to build.
+
+=== CELL 42 [code] ===
+best_name = res_df.iloc[0]["strategy"]
+CHUNKS    = store[best_name]["chunks"]
+CHUNK_VECS = store[best_name]["vecs"]
+CHUNK_TEXTS = [c.page_content for c in CHUNKS]
+
+print(f"WINNER: {best_name}")
+print(f"Frozen corpus: {len(CHUNKS):,} chunks, vectors shape {CHUNK_VECS.shape}")
+print("This (CHUNKS, CHUNK_VECS) is the canonical index input for §7–§11.")
+
+# free the other configs' vectors to save RAM
+for k in list(store):
+    if k != best_name:
+        store[k]["vecs"] = None
+
+=== CELL 43 [markdown] ===
+## 7 · Semantic search — the exact baseline
+
+Before approximating anything, build the **exact** search that every approximate method will be
+measured against. With our unit-normalized vectors, `IndexFlatIP` computes the inner product =
+**cosine similarity** between the query and every chunk, then returns the true top-k. It is
+**100% accurate by definition** — and perfectly fast at our scale. Its only problem is that it
+scans *every* vector, so cost grows linearly with corpus size; that is what §8 fixes.
+
+We wrap it in a small `SemanticSearcher` so the query path (embed → search → attach metadata) is
+one call. The same class will happily wrap an approximate index later — the interface never changes.
+
+=== CELL 44 [code] ===
+class SemanticSearcher:
+    """Embed a query, search a FAISS index, return (chunk, score) pairs with metadata."""
+    def __init__(self, embedder: Embedder, chunks: List[Document], index: "faiss.Index"):
+        self.embedder, self.chunks, self.index = embedder, chunks, index
+    @classmethod
+    def exact(cls, embedder, chunks, vecs):
+        index = faiss.IndexFlatIP(embedder.dim); index.add(vecs)
+        return cls(embedder, chunks, index)
+    def search(self, query: str, k: int = CFG.top_k) -> List[Tuple[Document, float]]:
+        qv = self.embedder.embed_query(query).reshape(1, -1)
+        scores, ids = self.index.search(qv, k)
+        return [(self.chunks[i], float(s)) for s, i in zip(scores[0], ids[0]) if i != -1]
+
+searcher = SemanticSearcher.exact(EMB, CHUNKS, CHUNK_VECS)
+print("Exact searcher ready over", len(CHUNKS), "chunks.")
+
+=== CELL 45 [code] ===
+def show_results(query: str, hits: List[Tuple[Document, float]]):
+    print("Q:", query, "\n" + "-" * 96)
+    for rank, (doc, score) in enumerate(hits, 1):
+        print(f"[{rank}] cos={score:.3f}  ·  {short(doc.metadata.get('title','') or doc.metadata['paper_id'], 60)}")
+        print("     ", short(doc.page_content.replace(chr(10), ' '), 150))
+
+demo_q = EVALSET[0]["question"]
+show_results(demo_q, searcher.search(demo_q, k=CFG.top_k))
+print("\n(The top hit should come from the same paper as the question and read on-topic.)")
+
+=== CELL 46 [markdown] ===
+## 8 · Approximate Nearest-Neighbour search
+
+Exact search reads every vector for every query. At a few thousand chunks that is instant; at tens
+of millions it is hopeless. **Approximate Nearest-Neighbour (ANN)** indexes accept a *tiny* loss of
+accuracy in exchange for orders-of-magnitude gains in speed and/or memory. Every ANN method is a
+point on this triangle:
+
+```
+                 ACCURACY (recall)
+                       /\
+                      /  \
+                     /    \
+            SPEED  /________\  MEMORY
+```
+
+You cannot maximize all three; you choose. The four FAISS indexes below cover the practical corners:
+
+- **IVF**  — *be lazy about where you look.* Faster search, same memory. (inverted file / clustering)
+- **PQ**   — *store vectors smaller.* Huge memory savings, some accuracy lost. (product quantization)
+- **IVF+PQ** — *do both.* The billion-scale workhorse.
+- **HNSW** — *follow a graph of shortcuts.* Excellent speed **and** recall, at higher memory/build cost.
+
+**How we measure recall.** The exact `IndexFlatIP` from §7 gives the *true* top-k for each query.
+For an approximate index, **recall@k = |approx_top-k ∩ exact_top-k| / k**, averaged over all
+evaluation questions. Recall = 1.0 means it reproduced exact search perfectly.
+
+=== CELL 47 [code] ===
+# Ground truth = exact top-k for the evaluation questions, plus one reusable benchmark harness.
+QVECS = EMB.embed([q["question"] for q in EVALSET])           # query vectors (reused everywhere)
+_flat = faiss.IndexFlatIP(EMB.dim); _flat.add(CHUNK_VECS)
+_, TRUTH_I = _flat.search(QVECS, CFG.eval_k)                   # the gold neighbours
+N, D = CHUNK_VECS.shape
+print(f"Benchmarking on {N:,} vectors (dim {D}), {len(QVECS)} queries, k={CFG.eval_k}")
+
+def recall_vs_truth(I: np.ndarray, k: int = CFG.eval_k) -> float:
+    return float(np.mean([len(set(a[:k]) & set(t[:k])) / k for a, t in zip(I, TRUTH_I)]))
+
+def bench(index, *, build_s: float, repeats: int = 3, k: int = CFG.eval_k) -> dict:
+    """Measure recall, per-query latency (best of N runs), QPS and serialized size."""
+    best = float("inf")
+    for _ in range(repeats):
+        t0 = time.perf_counter(); _, I = index.search(QVECS, k); best = min(best, time.perf_counter() - t0)
+    return {"recall@k": round(recall_vs_truth(I, k), 3),
+            "ms/query": round(best / len(QVECS) * 1000, 3),
+            "QPS": round(len(QVECS) / best),
+            "build_s": round(build_s, 2),
+            "size_MB": round(len(faiss.serialize_index(index)) / 1e6, 2)}
+
+# sensible cluster count for IVF given the corpus size
+NLIST = int(max(16, min(256, N // 64)))
+print("Using nlist =", NLIST, "for IVF-family indexes.")
+
+=== CELL 48 [markdown] ===
+### 8.1 · IVF — Inverted File (coarse quantization)
+
+**Idea.** Cluster the vectors into `nlist` cells with k-means (this is *training*). To search, find
+the few cells whose centroids are closest to the query and scan **only those**, ignoring the rest.
+
+```
+   all vectors            k-means → nlist cells          query: probe nearest nprobe cells only
+   • • • • • •            ┌──┐ ┌──┐ ┌──┐                 ┌──┐ ┌▒▒┐ ┌──┐    ▒ = searched
+   • • • • • •    ───►    │• │ │• │ │• │      ───►       │• │ │▒▒│ │• │    others skipped
+   • • • • • •            └──┘ └──┘ └──┘                 └──┘ └▒▒┘ └──┘
+```
+
+**Knob:** `nprobe` = how many cells to scan. `nprobe=1` is fastest/least accurate; `nprobe=nlist`
+degenerates to exact search. Memory is unchanged (full vectors are stored); only *speed* improves.
+
+=== CELL 49 [code] ===
+# Build IVF once, then sweep nprobe to trace the speed↔recall curve.
+quant = faiss.IndexFlatIP(D)
+ivf = faiss.IndexIVFFlat(quant, D, NLIST, faiss.METRIC_INNER_PRODUCT)
+t0 = time.perf_counter(); ivf.train(CHUNK_VECS); ivf.add(CHUNK_VECS); ivf_build = time.perf_counter() - t0
+
+ivf_rows = []
+for nprobe in [1, 4, 8, 16, 32, NLIST]:
+    ivf.nprobe = nprobe
+    r = bench(ivf, build_s=ivf_build)
+    ivf_rows.append({"nprobe": nprobe, **r})
+ivf_sweep = pd.DataFrame(ivf_rows)
+print("IVF: raising nprobe trades speed for recall; nprobe=nlist == exact.\n")
+ivf_sweep
+
+=== CELL 50 [markdown] ===
+### 8.2 · PQ — Product Quantization (compress the vectors)
+
+IVF made search *faster* but stored every vector in full. **Product Quantization attacks the other
+axis — memory.** This is what lets a billion vectors fit in RAM.
+
+**Idea.** Split each `D`-dim vector into `m` contiguous sub-vectors. Run k-means *inside each
+sub-space* to learn a small codebook of `2^nbits` (=256 when `nbits=8`) representative centroids.
+Now any vector is stored not as `D` floats but as `m` **bytes** — one centroid id per sub-vector.
+
+```
+  one vector, D=384 floats (1536 bytes)
+  ┌───────────────┬───────────────┬─── … ───┬───────────────┐   split into m sub-vectors
+  │  sub-vec 1    │  sub-vec 2    │         │  sub-vec m    │
+  └──────┬────────┴──────┬────────┴─── … ───┴──────┬────────┘
+         ▼               ▼                          ▼
+   codebook₁[256]   codebook₂[256]    …      codebookₘ[256]    each → nearest centroid id (1 byte)
+         ▼               ▼                          ▼
+       [ id₁ ,          id₂ ,         …          idₘ ]          stored = m bytes  (e.g. 8 bytes!)
+```
+
+**Knob:** `m` (number of sub-vectors). Larger `m` → finer approximation → higher recall but more
+bytes/vector. `m` must divide `D`. With `D=384` the legal values include 4, 8, 16, 32, 48.
+Compression vs raw float32 is `4·D / m`  →  e.g. `m=8` gives **192×** smaller. PQ is *lossy*:
+distances are approximate, so recall is lower than Flat/IVF — the sweep below makes the
+memory↔recall trade explicit.
+
+=== CELL 51 [code] ===
+# Sweep m: each setting is a different point on the memory↔recall curve.
+# nbits=8 → 256 centroids per sub-quantizer (the standard choice).
+raw_bytes = 4 * D  # float32 vector footprint, for the compression-ratio column
+
+pq_rows = []
+for m in [4, 8, 16, 32, 48]:
+    assert D % m == 0, f"m={m} must divide D={D}"
+    pq = faiss.IndexPQ(D, m, 8, faiss.METRIC_INNER_PRODUCT)
+    t0 = time.perf_counter(); pq.train(CHUNK_VECS); pq.add(CHUNK_VECS); pq_build = time.perf_counter() - t0
+    r = bench(pq, build_s=pq_build)
+    r["bytes/vec"] = m                       # code_size == m bytes
+    r["compression"] = f"{raw_bytes // m}x"
+    pq_rows.append({"m": m, **r})
+pq_sweep = pd.DataFrame(pq_rows)
+print(f"Raw float32 vector = {raw_bytes} bytes. PQ stores just m bytes/vector (hugely smaller).")
+print("Recall climbs with m; so does size. PQ alone is the memory play, not the speed play.\n")
+pq_sweep
+
+=== CELL 52 [markdown] ===
+### 8.3 · IVF + PQ — the billion-scale workhorse
+
+The two previous tricks are orthogonal, so we combine them:
+
+* **IVF** narrows the search to a few cells   → *speed*.
+* **PQ** compresses what is stored in those cells → *memory*.
+
+`IndexIVFPQ` does both: it coarsely assigns each vector to an IVF cell, then PQ-encodes the
+**residual** (vector minus its cell centroid) into `m` bytes. You get sub-linear scanning *and* a
+tiny footprint — which is exactly why this family backs most large production vector stores.
+
+```
+   query ─► find nearest nprobe cells (IVF)  ─►  inside them, compare against PQ codes (m bytes each)
+            └ skips most of the corpus ┘            └ never decompresses to full float32 ┘
+```
+
+**Knobs:** `nlist`/`nprobe` (from IVF) and `m`/`nbits` (from PQ) — speed and memory tuned
+independently. We fix a sensible `m` and sweep `nprobe` to show the now-familiar speed↔recall curve,
+but at a fraction of the memory of IVF-Flat.
+
+=== CELL 53 [code] ===
+# Fix a mid PQ setting, sweep nprobe. Note size_MB vs the IVF-Flat table above.
+PQ_M = 16  # bytes/vector for the residual code; must divide D
+assert D % PQ_M == 0
+
+quant2 = faiss.IndexFlatIP(D)
+ivfpq = faiss.IndexIVFPQ(quant2, D, NLIST, PQ_M, 8, faiss.METRIC_INNER_PRODUCT)
+t0 = time.perf_counter(); ivfpq.train(CHUNK_VECS); ivfpq.add(CHUNK_VECS); ivfpq_build = time.perf_counter() - t0
+
+ivfpq_rows = []
+for nprobe in [1, 4, 8, 16, 32, NLIST]:
+    ivfpq.nprobe = nprobe
+    r = bench(ivfpq, build_s=ivfpq_build)
+    ivfpq_rows.append({"nprobe": nprobe, **r})
+ivfpq_sweep = pd.DataFrame(ivfpq_rows)
+print(f"IVF+PQ with m={PQ_M}: similar speed/recall behaviour to IVF, but the index is far smaller.")
+print(f"(Compare size_MB here against ivf_sweep — that shrinkage is the whole point at scale.)\n")
+ivfpq_sweep
+
+=== CELL 54 [markdown] ===
+### 8.4 · HNSW — Hierarchical Navigable Small World (graph search)
+
+A completely different idea: **no clustering, no training** — build a navigable *graph* and walk it.
+
+**Idea.** Every vector becomes a node connected to its `M` nearest neighbours. Nodes are layered:
+sparse long-range links on top for big jumps, dense short-range links at the bottom for fine
+homing-in. A search enters at the top, greedily hops toward the query, and descends layer by layer —
+like zooming in on a map. It reaches the neighbourhood in *logarithmic* hops instead of scanning.
+
+```
+  layer 2   ●───────────────────●            few nodes, long hops  (coarse approach)
+            │                   │
+  layer 1   ●────●──────●───────●────●        more nodes, medium hops
+            │    │      │       │    │
+  layer 0   ●──●─●─●──●─●─●───●──●──●─●  ───►  ALL nodes, dense local links (final refine)
+            entry ▶ greedy hops toward query ▶ nearest
+```
+
+HNSW gives the **best recall-per-millisecond** of any method here and needs no training — the
+trade-off is **memory** (it stores the full vectors *plus* all graph edges) and a slower build.
+
+**Knobs:** `M` (edges/node, set at construction), `efConstruction` (build-time breadth → graph
+quality), and `efSearch` (query-time breadth → the recall/speed dial we sweep below).
+
+=== CELL 55 [code] ===
+# HNSW needs no train() — just add(). Build once, sweep efSearch.
+HNSW_M = 32
+hnsw = faiss.IndexHNSWFlat(D, HNSW_M, faiss.METRIC_INNER_PRODUCT)
+hnsw.hnsw.efConstruction = 80
+t0 = time.perf_counter(); hnsw.add(CHUNK_VECS); hnsw_build = time.perf_counter() - t0
+
+hnsw_rows = []
+for ef in [8, 16, 32, 64, 128]:
+    hnsw.hnsw.efSearch = ef
+    r = bench(hnsw, build_s=hnsw_build)
+    hnsw_rows.append({"efSearch": ef, **r})
+hnsw_sweep = pd.DataFrame(hnsw_rows)
+print(f"HNSW (M={HNSW_M}): recall climbs fast with efSearch while staying very low-latency.")
+print("Note build_s (graph construction) and size_MB (vectors + edges) are the costs you pay.\n")
+hnsw_sweep
+
+=== CELL 56 [markdown] ===
+## 9 · Putting the indexes head-to-head
+
+Each sweep above tuned one family in isolation. Now we pick **one sensible configuration per index
+type** and compare them on the same axes — recall, latency, throughput, build time and size — then
+plot the trade-offs and distil a practical "which one should I use?" guide.
+
+=== CELL 57 [code] ===
+# Build one representative configuration of each index type and bench them uniformly.
+def build_flat():
+    ix = faiss.IndexFlatIP(D); ix.add(CHUNK_VECS); return ix, 0.0
+
+def build_ivf(nprobe=16):
+    q = faiss.IndexFlatIP(D); ix = faiss.IndexIVFFlat(q, D, NLIST, faiss.METRIC_INNER_PRODUCT)
+    t0 = time.perf_counter(); ix.train(CHUNK_VECS); ix.add(CHUNK_VECS); b = time.perf_counter() - t0
+    ix.nprobe = min(nprobe, NLIST); return ix, b
+
+def build_pq(m=16):
+    ix = faiss.IndexPQ(D, m, 8, faiss.METRIC_INNER_PRODUCT)
+    t0 = time.perf_counter(); ix.train(CHUNK_VECS); ix.add(CHUNK_VECS); b = time.perf_counter() - t0
+    return ix, b
+
+def build_ivfpq(m=16, nprobe=16):
+    q = faiss.IndexFlatIP(D); ix = faiss.IndexIVFPQ(q, D, NLIST, m, 8, faiss.METRIC_INNER_PRODUCT)
+    t0 = time.perf_counter(); ix.train(CHUNK_VECS); ix.add(CHUNK_VECS); b = time.perf_counter() - t0
+    ix.nprobe = min(nprobe, NLIST); return ix, b
+
+def build_hnsw(M=32, efC=80, efS=64):
+    ix = faiss.IndexHNSWFlat(D, M, faiss.METRIC_INNER_PRODUCT); ix.hnsw.efConstruction = efC
+    t0 = time.perf_counter(); ix.add(CHUNK_VECS); b = time.perf_counter() - t0
+    ix.hnsw.efSearch = efS; return ix, b
+
+builders = {"Flat (exact)": build_flat, "IVF (nprobe=16)": build_ivf,
+            "PQ (m=16)": build_pq, "IVF+PQ (m=16,np=16)": build_ivfpq, "HNSW (efS=64)": build_hnsw}
+
+summary_rows = []
+for name, fn in builders.items():
+    ix, b = fn()
+    summary_rows.append({"index": name, **bench(ix, build_s=b)})
+summary_df = pd.DataFrame(summary_rows)
+print("One representative config per family, same queries, same k:\n")
+summary_df
+
+=== CELL 58 [code] ===
+# Two pictures tell the whole story: speed↔recall, and memory↔recall.
+fig, ax = plt.subplots(1, 2, figsize=(13, 5))
+
+ax[0].scatter(summary_df["ms/query"], summary_df["recall@k"], s=90, color="#E45756", zorder=3)
+for _, r in summary_df.iterrows():
+    ax[0].annotate(r["index"], (r["ms/query"], r["recall@k"]),
+                   textcoords="offset points", xytext=(6, 4), fontsize=8)
+ax[0].set_xlabel("latency  (ms / query, lower = faster)"); ax[0].set_ylabel(f"recall@{CFG.eval_k}")
+ax[0].set_title("Speed ↔ accuracy  (top-left is best)"); ax[0].set_xscale("log"); ax[0].grid(alpha=0.3)
+
+ax[1].scatter(summary_df["size_MB"], summary_df["recall@k"], s=90, color="#54A24B", zorder=3)
+for _, r in summary_df.iterrows():
+    ax[1].annotate(r["index"], (r["size_MB"], r["recall@k"]),
+                   textcoords="offset points", xytext=(6, 4), fontsize=8)
+ax[1].set_xlabel("index size  (MB, lower = leaner)"); ax[1].set_ylabel(f"recall@{CFG.eval_k}")
+ax[1].set_title("Memory ↔ accuracy  (top-left is best)"); ax[1].grid(alpha=0.3)
+
+plt.tight_layout(); plt.show()
+
+=== CELL 59 [markdown] ===
+### 9.1 · Which index should I use?
+
+| Situation | Pick | Why |
+|---|---|---|
+| Small corpus (≲ 50k), or you need exact answers / a ground-truth baseline | **Flat** | Zero approximation, trivial to build; brute force is fast enough at this size |
+| Need high recall **and** low latency, memory is not the bottleneck | **HNSW** | Best recall-per-ms; no training. Costs RAM (vectors + graph) and build time |
+| Large corpus, latency matters, full vectors still fit in RAM | **IVF (Flat)** | Big speed-up via cell pruning, recall stays high, vectors kept intact |
+| Corpus too big to store as float32 (tens of millions+) | **PQ** or **IVF+PQ** | PQ compresses 100×+; add IVF to also prune. The standard billion-scale combo |
+| Frequent rebuilds / streaming inserts | **IVF / IVF+PQ** | Cheap to add to; HNSW rebuilds are pricier |
+
+**Rules of thumb.** Start with Flat to get correct answers and a recall ceiling. Outgrow it on
+*latency* → reach for HNSW (RAM-rich) or IVF (balanced). Outgrow it on *memory* → add PQ. The
+combination **IVF+PQ** is the default for very large, production-scale stores. Always re-tune the
+knob (`nprobe` / `efSearch` / `m`) against *your* data — recall is dataset-dependent, so measure,
+don't guess.
+
+=== CELL 60 [markdown] ===
+### 9.2 · (Optional) Why this matters at scale
+
+On our few-thousand-chunk corpus, Flat is already fast — the ANN win looks small. The gap explodes
+as the corpus grows, because Flat is **O(N)** per query while IVF/HNSW are sub-linear. The cell
+below builds a **synthetic** ~200k-vector set purely to illustrate that divergence. It is clearly
+labelled synthetic and gated by a flag — set it to `False` to skip (it takes ~30–60 s on CPU).
+
+=== CELL 61 [code] ===
+RUN_SCALING_DEMO = True  # set False to skip the ~200k-vector illustration
+
+if RUN_SCALING_DEMO:
+    rng = np.random.default_rng(CFG.seed)
+    Nbig, Dbig, ncent = 200_000, 64, 200
+    centers = rng.standard_normal((ncent, Dbig)).astype("float32")
+    xb = centers[rng.integers(0, ncent, Nbig)] + 0.05 * rng.standard_normal((Nbig, Dbig)).astype("float32")
+    xb /= (np.linalg.norm(xb, axis=1, keepdims=True) + 1e-9)
+    xq = xb[rng.integers(0, Nbig, 1000)].copy()
+
+    def _qps(ix, warmup_train=None):
+        if warmup_train is not None: ix.train(xb)
+        ix.add(xb)
+        t0 = time.perf_counter(); ix.search(xq, 10); dt = time.perf_counter() - t0
+        return round(len(xq) / dt)
+
+    flat_b = faiss.IndexFlatIP(Dbig)
+    ivf_q = faiss.IndexFlatIP(Dbig); ivf_b = faiss.IndexIVFFlat(ivf_q, Dbig, 1024, faiss.METRIC_INNER_PRODUCT)
+    hnsw_b = faiss.IndexHNSWFlat(Dbig, 32, faiss.METRIC_INNER_PRODUCT); hnsw_b.hnsw.efSearch = 64
+
+    qps_flat = _qps(flat_b)
+    ivf_b.train(xb); ivf_b.add(xb); ivf_b.nprobe = 8
+    t0 = time.perf_counter(); ivf_b.search(xq, 10); qps_ivf = round(len(xq) / (time.perf_counter() - t0))
+    qps_hnsw = _qps(hnsw_b)
+
+    scale_df = pd.DataFrame([
+        {"index": "Flat",  "queries/sec @200k": qps_flat},
+        {"index": "IVF",   "queries/sec @200k": qps_ivf},
+        {"index": "HNSW",  "queries/sec @200k": qps_hnsw},
+    ])
+    print(f"SYNTHETIC {Nbig:,}×{Dbig} vectors — throughput (higher = better):")
+    print(f"ANN indexes serve many× more queries/sec than brute force at this size.\n")
+    display(scale_df)
+else:
+    print("Scaling demo skipped (RUN_SCALING_DEMO = False).")
+
+=== CELL 62 [markdown] ===
+## 10 · Production touches
+
+A working retriever is the start, not the finish. Four upgrades separate a demo from something you
+would put behind an API:
+
+1. **Persistence** — build the index once offline, reload it instantly at serve time.
+2. **Metadata filtering** — restrict search to a paper, section, date range, tenant, …
+3. **Hybrid search** — combine sparse keyword (BM25) with dense vectors so you catch both exact
+   terms and paraphrases.
+4. **Reranking** — re-score the shortlist with a cross-encoder for a precision boost.
+
+=== CELL 63 [markdown] ===
+### 10.1 · Persist the index + metadata, then reload
+
+Embedding and index-building are the expensive, *offline* steps. In production you do them once and
+ship two artefacts: the **FAISS index** (`faiss.write_index`) and a **sidecar** holding each
+vector's text + metadata (here JSON; pickle/parquet/a real DB work too). At serve time you
+`read_index` and the lookup table — milliseconds, no re-embedding.
+
+=== CELL 64 [code] ===
+import json, os
+
+PERSIST_DIR = os.path.join(SAMP, "rag_index"); os.makedirs(PERSIST_DIR, exist_ok=True)
+
+# 1) the vector index
+prod_index = faiss.IndexFlatIP(D); prod_index.add(CHUNK_VECS)
+faiss.write_index(prod_index, os.path.join(PERSIST_DIR, "index.faiss"))
+
+# 2) the sidecar: text + metadata, aligned 1:1 with vector ids (row order == add order)
+sidecar = [{"text": c.page_content, **c.metadata} for c in CHUNKS]
+with open(os.path.join(PERSIST_DIR, "chunks.json"), "w") as f:
+    json.dump(sidecar, f)
+
+size_mb = sum(os.path.getsize(os.path.join(PERSIST_DIR, f)) for f in os.listdir(PERSIST_DIR)) / 1e6
+print(f"Wrote index + {len(sidecar)} chunk records to {PERSIST_DIR}  ({size_mb:.1f} MB on disk)")
+
+# --- serve time: reload and sanity-check it still answers identically ---
+reloaded = faiss.read_index(os.path.join(PERSIST_DIR, "index.faiss"))
+with open(os.path.join(PERSIST_DIR, "chunks.json")) as f:
+    reloaded_meta = json.load(f)
+
+probe = EMB.embed_query(EVALSET[0]["question"])
+_, I = reloaded.search(probe[None, :], 3)
+print("\nReloaded index answers the first eval question with:")
+for rank, idx in enumerate(I[0], 1):
+    print(f"  {rank}. [{reloaded_meta[idx]['paper_id']}] {reloaded_meta[idx]['text'][:90]}...")
+
+=== CELL 65 [markdown] ===
+### 10.2 · Metadata filtering
+
+Often you must search *within a scope* — one paper, one customer's documents, a date window. Two
+patterns: **pre-filter** (restrict the candidate id set before searching, e.g. FAISS `IDSelector`
+on IVF) or the simpler, index-agnostic **post-filter** — over-fetch, then drop anything whose
+metadata fails the predicate. We use post-filtering: robust, works on every index type, and cheap
+as long as you fetch a healthy `k`.
+
+=== CELL 66 [code] ===
+def filtered_search(query: str, where, k: int = 5, overfetch: int = 20):
+    """Retrieve top-k chunks that satisfy a metadata predicate `where(meta) -> bool`."""
+    qv = EMB.embed_query(query)
+    scores, idx = prod_index.search(qv[None, :], overfetch)
+    out = []
+    for s, i in zip(scores[0], idx[0]):
+        meta = sidecar[i]
+        if where(meta):
+            out.append((meta, float(s)))
+        if len(out) == k:
+            break
+    return out
+
+# Demo: same question, but restricted to a single paper.
+target_pid = CHUNKS[0].metadata["paper_id"]
+q = EVALSET[0]["question"]
+hits = filtered_search(q, where=lambda m: m["paper_id"] == target_pid, k=3)
+print(f"Q: {q}\nRestricted to paper_id={target_pid}:\n")
+for meta, s in hits:
+    print(f"  score={s:.3f}  chunk#{meta['chunk_id']}  {meta['text'][:90]}...")
+
+=== CELL 67 [markdown] ===
+### 10.3 · Hybrid search — dense + BM25 with Reciprocal Rank Fusion
+
+Dense vectors capture *meaning* (paraphrases, synonyms) but can miss rare exact tokens — error
+codes, IDs, surnames. Sparse **BM25** keyword scoring is the opposite. **Hybrid** retrieval runs
+both and fuses the rankings with **Reciprocal Rank Fusion (RRF)**: a document's fused score is
+`Σ 1/(k₀ + rank)` across lists, so anything ranked highly by *either* method floats up — no score
+normalisation needed. Below we measure dense-only vs BM25-only vs hybrid on the eval set.
+
+=== CELL 68 [code] ===
+from rank_bm25 import BM25Okapi
+from collections import defaultdict
+import re as _re
+
+_tok = lambda t: _re.sub(r"[^\w]+", " ", t.lower()).split()      # token LIST (TF matters for BM25)
+bm25 = BM25Okapi([_tok(t) for t in CHUNK_TEXTS])
+
+# Dense scores for every eval query at once (normalised vectors → inner product == cosine).
+DENSE = QVECS @ CHUNK_VECS.T                                       # (n_queries, n_chunks)
+
+def rank_dense(i):  return list(np.argsort(-DENSE[i]))
+def rank_bm25(i):   return list(np.argsort(-bm25.get_scores(_tok(EVALSET[i]["question"]))))
+
+def rrf(rank_lists, k0=60, depth=100):
+    agg = defaultdict(float)
+    for rl in rank_lists:
+        for rank, idx in enumerate(rl[:depth]):
+            agg[int(idx)] += 1.0 / (k0 + rank + 1)
+    return [i for i, _ in sorted(agg.items(), key=lambda x: -x[1])]
+
+def eval_ranker(rank_fn):
+    retrieved = [[CHUNKS[i] for i in rank_fn(qi)[:CFG.eval_k]] for qi in range(len(EVALSET))]
+    return score_retrieval(retrieved, EVALSET, CFG.eval_k)
+
+dense_only = eval_ranker(rank_dense)
+bm25_only  = eval_ranker(rank_bm25)
+hybrid     = eval_ranker(lambda i: rrf([rank_dense(i), rank_bm25(i)]))
+
+hybrid_df = pd.DataFrame([
+    {"method": "Dense (SBERT)", **{f"hit@{CFG.eval_k}": round(dense_only["hit@k"], 3), "MRR": round(dense_only["mrr"], 3)}},
+    {"method": "BM25 (sparse)", **{f"hit@{CFG.eval_k}": round(bm25_only["hit@k"], 3),  "MRR": round(bm25_only["mrr"], 3)}},
+    {"method": "Hybrid (RRF)",  **{f"hit@{CFG.eval_k}": round(hybrid["hit@k"], 3),     "MRR": round(hybrid["mrr"], 3)}},
+])
+print("Fusing dense + sparse usually matches or beats either alone:\n")
+hybrid_df
+
+=== CELL 69 [markdown] ===
+### 10.4 · Reranking with a cross-encoder
+
+Bi-encoders (our SBERT) embed query and document *separately* — fast, but they never directly
+compare the two. A **cross-encoder** feeds `(query, chunk)` *together* through a transformer and
+outputs one relevance score. It is far more accurate but too slow to run over the whole corpus —
+so the production pattern is **retrieve-then-rerank**: cheap bi-encoder fetches a shortlist (say 20),
+the cross-encoder re-scores just those. We measure the precision lift on a capped eval subset
+(cross-encoders are slow on CPU).
+
+=== CELL 70 [code] ===
+from sentence_transformers import CrossEncoder
+
+reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2", device=DEVICE)
+N_RERANK_EVAL = min(40, len(EVALSET))   # cap: cross-encoder is the slow part
+SHORTLIST = 20
+
+base_hits, base_rr, re_hits, re_rr = [], [], [], []
+for qi in range(N_RERANK_EVAL):
+    q = EVALSET[qi]
+    cand = rank_dense(qi)[:SHORTLIST]                       # bi-encoder shortlist
+    base = [CHUNKS[i] for i in cand]
+    scores = reranker.predict([(q["question"], CHUNKS[i].page_content) for i in cand])
+    reranked = [CHUNKS[i] for i, _ in sorted(zip(cand, scores), key=lambda x: -x[1])]
+
+    for store_h, store_r, docs in [(base_hits, base_rr, base), (re_hits, re_rr, reranked)]:
+        flags = [is_relevant(c, q) for c in docs[:CFG.eval_k]]
+        store_h.append(1.0 if any(flags) else 0.0)
+        store_r.append(next((1.0 / r for r, f in enumerate(flags, 1) if f), 0.0))
+
+rerank_df = pd.DataFrame([
+    {"stage": "Bi-encoder shortlist", f"hit@{CFG.eval_k}": round(np.mean(base_hits), 3), "MRR": round(np.mean(base_rr), 3)},
+    {"stage": "+ Cross-encoder rerank", f"hit@{CFG.eval_k}": round(np.mean(re_hits), 3), "MRR": round(np.mean(re_rr), 3)},
+])
+print(f"Reranking the top-{SHORTLIST} on {N_RERANK_EVAL} questions — MRR lift shows better ordering:\n")
+rerank_df
+

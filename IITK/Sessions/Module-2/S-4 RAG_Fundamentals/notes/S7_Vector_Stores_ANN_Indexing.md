@@ -267,6 +267,8 @@ Per database vector: Look up + add
   = just 3 table lookups + 2 additions → no float distance computation!
 ```
 
+https://krishnakonar12.medium.com/understanding-product-quantization-a-step-by-step-guide-36c07902e92f
+
 **Why "Asymmetric":** The query stays at full precision, while documents are compressed. The costly query-centroid math happens once; scanning a million vectors is then just lookups and additions — no per-vector float distance.
 
 ### FAISS Implementation

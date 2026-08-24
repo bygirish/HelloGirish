@@ -58,6 +58,24 @@ These are three points on one spectrum — from recoverable to fatal.
 > buys you the earliest warning, often tens of steps before the loss looks wrong. By the
 > time you see `NaN` in the loss, you're already too late — restore from a checkpoint.
 
+**The escalation, as a timeline** — notice how the *gradient norm* (top) moves first:
+
+```mermaid
+flowchart LR
+    A["✅ Healthy<br/>grad-norm ~ steady<br/>loss trending down"]
+    A --> B["⚠️ Loss Spike<br/>1 bad batch<br/>loss jumps, then RECOVERS"]
+    B --> C["🔥 Gradient Explosion<br/>grad-norm grows<br/>exponentially over ~10s of steps"]
+    C --> D["💀 Divergence<br/>Inf → NaN<br/>gibberish output, no recovery"]
+    B -.self-repairs.-> A
+    style A fill:#c8e6c9,stroke:#1b5e20
+    style B fill:#fff9c4,stroke:#f57f17
+    style C fill:#ffe0b2,stroke:#e65100
+    style D fill:#ffcdd2,stroke:#b71c1c
+```
+
+The dotted arrow is the key distinction: a **spike self-heals**; once you're in
+**explosion → divergence**, only a checkpoint restore saves the run.
+
 ---
 
 ## 2.3 Mitigation #1: Gradient Clipping (Slide 19)
@@ -75,6 +93,18 @@ optimizer.step()
 TrainingArguments(
     max_grad_norm=1.0,   # default — keep it
 )
+```
+
+Note that `clip_grad_norm_` **returns the pre-clip total norm** — that's your early-warning
+signal from §2.2. Log it and alert when it jumps above its running median:
+
+```python
+loss.backward()
+total_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+# total_norm is measured BEFORE clipping — this is what you monitor/plot
+if total_norm > 5 * running_median:          # ~5–10× median = explosion warning (§2.2)
+    print(f"⚠️  grad-norm {total_norm:.1f} >> median — LR likely too high")
+optimizer.step()
 ```
 
 **Tuning the cap:**
@@ -127,10 +157,19 @@ No single setting saves you — they **stack**. This is the money slide of the s
 | **Checkpoints** | save every N steps; keep last 3 | Losing the run when divergence strikes |
 
 > 💡 **Learning Thought — the bf16 vs fp16 point is a favorite interview trap.** Both are
-> 16-bit. But **bf16** keeps fp32's *exponent range* (8 bits) while sacrificing mantissa
+> 16-bit. But **[bf16](https://cloud.google.com/blog/products/ai-machine-learning/bfloat16-the-secret-to-high-performance-on-cloud-tpus)**
+> keeps fp32's *exponent range* (8 bits) while sacrificing mantissa
 > precision, so it **can't overflow** at 65,504 the way fp16 does — it trades numerical
 > *precision* for numerical *range*, and range is what prevents the Inf/NaN cascade. On
 > hardware that supports it (Ampere+), **always prefer bf16 for training.**
+
+The bit layouts, side by side (the exponent field is what matters):
+
+```
+fp32  : 1 sign | 8 exponent | 23 mantissa   → range ~1e38,  high precision
+bf16  : 1 sign | 8 exponent |  7 mantissa   → range ~1e38,  low precision   ✅ no overflow
+fp16  : 1 sign | 5 exponent | 10 mantissa   → range ~65504, med precision   ❌ overflows
+```
 
 ---
 
@@ -186,3 +225,22 @@ stability and final loss?**
 **Instability is a step-size problem: the fix is a *compounding stack* — clip the outliers,
 warm up then decay the LR, train in bf16, keep the peak LR conservative, monitor the
 gradient norm as an early alarm, and checkpoint so a blow-up costs minutes, not the run.**
+
+---
+
+## 🔗 Further reading
+
+- **[Understanding Mixed Precision Training](https://pytorch.org/docs/stable/amp.html)** (PyTorch AMP docs)
+  and NVIDIA's [Train With Mixed Precision guide](https://docs.nvidia.com/deeplearning/performance/mixed-precision-training/index.html)
+  — the definitive explanation of fp16/bf16, loss scaling, and why overflow happens.
+- **[bfloat16: The secret to high performance](https://cloud.google.com/blog/products/ai-machine-learning/bfloat16-the-secret-to-high-performance-on-cloud-tpus)**
+  (Google) — the clearest write-up of the range-vs-precision trade-off in §2.5.
+- **[Why gradient clipping accelerates training](https://arxiv.org/abs/1905.11881)** (Zhang et al.)
+  — the theory behind §2.3; clipping tames "heavy-tailed" gradient noise.
+- **Loss spikes in the wild:** the [OPT-175B logbook](https://github.com/facebookresearch/metaseq/blob/main/projects/OPT/chronicles/OPT175B_Logbook.pdf)
+  and [GLM-130B](https://arxiv.org/abs/2210.02414) (which has a whole section on training
+  stability) document real teams fighting exactly these spikes at scale — §2.2 in production.
+- **[HF Trainer — TrainingArguments](https://huggingface.co/docs/transformers/main_classes/trainer#transformers.TrainingArguments)**
+  reference for `max_grad_norm`, `bf16`, `warmup_ratio`, `save_steps` — every knob in §2.5.
+- **[The curious case of the loss curve that goes to NaN](https://karpathy.github.io/2019/04/25/recipe/)**
+  — Karpathy's *"A Recipe for Training Neural Networks"*, the classic debugging checklist.

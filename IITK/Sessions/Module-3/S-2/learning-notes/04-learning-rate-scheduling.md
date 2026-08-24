@@ -28,6 +28,21 @@ That "big early, small late" requirement is *exactly* what a schedule delivers.
 | **2 · Rapid learning** | ~3% – ~60% | Gradients are large, consistent, informative; model crosses easy terrain — *most of the task is learned here* | LR sits at **peak** |
 | **3 · Convergence** | ~60% – 100% | Model sits inside a *narrowing valley*; safe step size shrinks with progress | LR **decays** toward floor |
 
+The LR-vs-progress arc for the default **cosine + warmup**, in ASCII:
+
+```
+LR
+peak ┤        ______
+     │      /        \___
+     │    /              \___
+     │  /                    \____
+     │ /                          \____
+   0 ┼/─────────────────────────────────\___  → training progress
+     0%   3%        ~60%                 100%
+     └warmup┘└──── peak (rapid learning)────┘└─decay─┘
+       ↑ fragile start        ↑ productive middle   ↑ narrowing valley
+```
+
 > 💡 **Learning Thought:** A schedule is not arbitrary curve-fitting — it's *matching the step
 > size to the physics of each phase.* Warmup protects the fragile start, the peak exploits the
 > productive middle, and decay respects the narrowing valley at the end. Every schedule shape
@@ -96,18 +111,21 @@ sched = torch.optim.lr_scheduler.MultiStepLR(opt, milestones=[2000, 3500], gamma
 sched = ReduceLROnPlateau(opt, factor=0.5, patience=3)                                   # reactive
 ```
 
-### (5) Cosine with Restarts / Cyclical (Slide 42)
+### (5) [Cosine with Restarts / Cyclical](https://arxiv.org/abs/1608.03983) (Slide 42)
 Cosine decay that **periodically snaps back to the peak** and decays again. Each restart *kicks
 the model out of its current basin* — a cheap way to explore several solutions in one run.
+Introduced as **SGDR** (Loshchilov & Hutter); closely related to
+[Cyclical Learning Rates](https://arxiv.org/abs/1506.01186) (Leslie Smith).
 ```python
 TrainingArguments(lr_scheduler_type="cosine_with_restarts", learning_rate=2e-5, warmup_ratio=0.02)
 # cycles via lr_scheduler_kwargs={"num_cycles": 3}
 ```
 
-### (6) Warmup–Stable–Decay / WSD (Slide 43)
+### (6) [Warmup–Stable–Decay / WSD](https://arxiv.org/abs/2404.06395) (Slide 43)
 A **trapezoid**: warm up, *hold the peak for most of the run*, then decay sharply in the final
 ~10–20%. Its superpower: you can **decay on demand from any point** — perfect when you don't
-know the run length up front.
+know the run length up front. Popularized by the **MiniCPM** report as a way to train
+open-ended without committing to a total step count.
 ```python
 TrainingArguments(lr_scheduler_type="warmup_stable_decay", learning_rate=2e-5,
                   warmup_ratio=0.03, lr_scheduler_kwargs={"num_decay_steps": 500})
@@ -125,6 +143,56 @@ TrainingArguments(lr_scheduler_type="warmup_stable_decay", learning_rate=2e-5,
 | **Step Decay** | val-driven drops |
 | **Cosine Restarts** | multi-solution runs |
 | **WSD** | open-ended budgets |
+
+---
+
+## 🧪 Comparing schedules head-to-head in Demo 1 (`LW-BW-P-FT-and-LRs`)
+
+Demo 1's whole point is to train the **same model, same data, same peak LR** under three
+different schedules and plot the difference. The mechanism is just swapping one string in
+`TrainingArguments` — the HF `Trainer` builds the schedule for you:
+
+```python
+SCHEDULERS_TO_COMPARE = ["linear", "cosine", "constant_with_warmup"]
+WARMUP_RATIO = 0.1            # identical warmup across all three, so only the DECAY differs
+
+# warmup is specified in *steps*; derive it from the total-step estimate
+total_steps  = approx_steps_per_epoch * EPOCHS
+warmup_steps = max(1, int(total_steps * WARMUP_RATIO))
+
+for scheduler_name in SCHEDULERS_TO_COMPARE:
+    training_args = TrainingArguments(
+        learning_rate = LR,                     # SAME peak LR (2e-5) for every run
+        lr_scheduler_type = scheduler_name,     # ← the only thing that changes
+        warmup_steps = warmup_steps,
+        num_train_epochs = EPOCHS,
+        eval_strategy = "epoch",
+        ...
+    )
+    trainer = MultiTaskTrainer(model=fresh_model, args=training_args, ...)
+    trainer.train()
+    # log_history now holds per-step 'loss' and per-epoch 'eval_loss' to plot (see §7)
+```
+
+> 💡 **Learning Thought:** This is the *cleanest possible controlled experiment* — hold
+> everything fixed and vary a single knob. Because warmup and peak LR are identical, any
+> difference in the loss curves is attributable **purely to the decay shape**. That's exactly
+> the discipline you want when tuning schedules on your own runs: change one thing, plot,
+> compare. (Demo 1 saves the loss/val-loss curves — those plots belong to §7.)
+
+Under the hood, `Trainer` calls
+[`transformers.get_scheduler`](https://huggingface.co/docs/transformers/main_classes/optimizer_schedules)
+— you can use the same schedules in a manual loop:
+
+```python
+from transformers import get_scheduler
+scheduler = get_scheduler(
+    name="cosine", optimizer=optimizer,
+    num_warmup_steps=warmup_steps, num_training_steps=total_steps,
+)
+# inside the loop, after optimizer.step():
+scheduler.step()     # advance the LR one step along the schedule
+```
 
 ---
 
@@ -197,3 +265,23 @@ TrainingArguments(lr_scheduler_type="warmup_stable_decay", learning_rate=2e-5,
 the fragile start, hold the peak through rapid learning, decay into the narrowing valley — and
 when in doubt use *cosine + 3% warmup*, fixing instability by lengthening warmup and lowering
 the peak before ever swapping the shape.**
+
+---
+
+## 🔗 Further reading
+
+- **[HF — Optimization / schedules](https://huggingface.co/docs/transformers/main_classes/optimizer_schedules)**:
+  the exact `lr_scheduler_type` strings and `get_scheduler` API used in Demo 1. Visualize any
+  of them with the [PyTorch LR scheduler docs](https://pytorch.org/docs/stable/optim.html#how-to-adjust-learning-rate).
+- **Cosine restarts:** [SGDR: Stochastic Gradient Descent with Warm Restarts](https://arxiv.org/abs/1608.03983)
+  · **Cyclical LR:** [Cyclical Learning Rates for Training NNs](https://arxiv.org/abs/1506.01186) (Leslie Smith).
+- **WSD:** [MiniCPM](https://arxiv.org/abs/2404.06395) introduces Warmup-Stable-Decay and shows
+  why it enables open-ended / continual training.
+- **Why warmup at all?** [On the Variance of the Adaptive Learning Rate and Beyond (RAdam)](https://arxiv.org/abs/1908.03265)
+  and [On Layer Normalization in the Transformer Architecture](https://arxiv.org/abs/2002.04745)
+  explain warmup's role in stabilizing early Adam updates.
+- **Finding the peak LR:** [the LR range test](https://arxiv.org/abs/1506.01186) and
+  [fast.ai's `lr_find`](https://docs.fast.ai/callback.schedule.html#learner.lr_find) — a
+  practical way to pick the single most important hyperparameter.
+- **Visual intuition:** [Distill.pub — "Why Momentum Really Works"](https://distill.pub/2017/momentum/)
+  builds the geometry (valleys, step size) that makes decay schedules make sense.

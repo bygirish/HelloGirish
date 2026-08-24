@@ -16,8 +16,46 @@ nudges *every* parameter slightly downhill on the loss. The six stages of one st
 text ─► tokens ─► predict next token ─► softmax ─► cross-entropy loss ─► backprop ─► update ─► (repeat)
 ```
 
+The same loop drawn as a cycle (this diagram renders on GitHub and in VS Code with the
+*Markdown Preview Mermaid Support* extension):
+
+```mermaid
+flowchart LR
+    A[Raw text] --> B[Tokenize<br/>text → integer IDs]
+    B --> C[Forward pass<br/>predict next-token logits]
+    C --> D[Softmax<br/>logits → probabilities]
+    D --> E[Cross-entropy loss L<br/>score vs. true next token]
+    E --> F[Backprop<br/>∂L/∂θ for every param]
+    F --> G[Optimizer step<br/>θ ← θ − η·∂L/∂θ]
+    G -->|next mini-batch| B
+    style E fill:#ffe0b2,stroke:#e65100
+    style G fill:#c8e6c9,stroke:#1b5e20
+```
+
 Nothing about this changes between pretraining and fine-tuning. Fine-tuning is the *same
 loop* on a smaller, more specific dataset, usually with a smaller learning rate.
+
+> 🧪 **See it in real code (Demo 3 — Catastrophic-Forgetting).** The entire six-stage loop
+> above is *literally* these seven lines. Every later concept in this lecture is a tweak to
+> one of them:
+>
+> ```python
+> def train_one_epoch(loader, forward_fn, optimizer):
+>     model.train()
+>     for batch in loader:                       # ← mini-batch (§1.3)
+>         input_ids      = batch["input_ids"].to(DEVICE)
+>         attention_mask = batch["attention_mask"].to(DEVICE)
+>         labels         = batch["label"].to(DEVICE)
+>
+>         optimizer.zero_grad()                  # clear last step's gradients
+>         logits = forward_fn(input_ids, attention_mask)   # forward pass → logits (§1.4–1.5)
+>         loss   = loss_fn(logits, labels)       # cross-entropy (§1.6); loss_fn = nn.CrossEntropyLoss()
+>         loss.backward()                        # backprop: fills every .grad (§1.7)
+>         optimizer.step()                       # the update θ ← θ − η·∂L/∂θ (§1.8)
+> ```
+>
+> `nn.CrossEntropyLoss` in PyTorch *fuses* the softmax (§1.5) and the cross-entropy (§1.6)
+> into one numerically-stable op — that's why you pass **raw logits**, not probabilities.
 
 ---
 
@@ -97,7 +135,8 @@ $$L = -\frac{1}{N}\sum_{i} \log p_i(\text{correct token})$$
 > This single scalar `L` is exactly what gradient descent minimizes.
 
 > 💡 **Learning Thought:** Cross-entropy loss is measured in *nats* (or bits). `exp(L)`
-> is **perplexity** — the model's "average branching factor," i.e., how many tokens it's
+> is **[perplexity](https://huggingface.co/docs/transformers/perplexity)** — the model's
+> "average branching factor," i.e., how many tokens it's
 > effectively choosing between. A loss of 2.0 ≈ perplexity 7.4. Interviewers love this link.
 
 ---
@@ -128,9 +167,11 @@ Applied to **every parameter at once**. Three things to internalize:
    crawls.* Typically ~1e-4 with warmup + decay. → This one number gets its own section (§4).
 
 2. **In practice: adaptive SGD, not plain SGD.** Plain SGD is rarely used for LLMs.
-   **Adam / AdamW** rescales each parameter's step by running averages of its recent
+   **[Adam](https://arxiv.org/abs/1412.6980) / [AdamW](https://arxiv.org/abs/1711.05101)**
+   rescales each parameter's step by running averages of its recent
    gradients (first moment = mean, second moment = variance). Parameters with consistent
-   gradients move confidently; noisy ones move cautiously.
+   gradients move confidently; noisy ones move cautiously. (AdamW's twist over Adam:
+   *decoupled* weight decay — it regularizes weights separately from the gradient step.)
 
 3. **Then loop.** Load the next mini-batch and repeat.
 
@@ -207,3 +248,26 @@ Vocabulary you will reuse for the entire lecture:
 **An LLM learns by repeatedly taking a small, averaged, downhill step (`θ ← θ − η·∂L/∂θ`)
 on cross-entropy loss — and every problem in the rest of this lecture is that step being
 too big, too noisy, or pointed the wrong way.**
+
+---
+
+## 🔗 Further reading
+
+Build the foundation from the ground up — these are the canonical, high-quality resources:
+
+- **Andrej Karpathy — [Neural Networks: Zero to Hero](https://karpathy.ai/zero-to-hero.html)**
+  (free video course). Watch *"The spelled-out intro to backpropagation"* (micrograd) and
+  *"Building makemore"* to *feel* the loss → backprop → update loop. The single best way to
+  make §1.7–1.8 click.
+- **Karpathy — [Let's build the GPT Tokenizer](https://www.youtube.com/watch?v=zduSFxRajkE)**
+  + [minbpe](https://github.com/karpathy/minbpe): exactly what §1.2 (tokenization) is doing.
+- **Hugging Face — [Summary of the tokenizers](https://huggingface.co/docs/transformers/tokenizer_summary)**
+  (BPE / WordPiece / Unigram) and the [LLM Course, Ch. "How do Transformers work?"](https://huggingface.co/learn/llm-course/chapter1/1).
+- **3Blue1Brown — [But what is backpropagation really doing?](https://www.youtube.com/watch?v=Ilg3gGewQ5U)**
+  and the [Neural Networks series](https://www.3blue1brown.com/topics/neural-networks) — the
+  best *visual* intuition for gradients and gradient descent.
+- **[The Softmax function and its derivative](https://eli.thegreenplace.net/2016/the-softmax-function-and-its-derivative/)**
+  (Eli Bendersky) — derives why softmax + cross-entropy gives the clean `(p − y)` gradient
+  from §1.7.
+- **Papers:** [Adam](https://arxiv.org/abs/1412.6980) · [Decoupled Weight Decay / AdamW](https://arxiv.org/abs/1711.05101)
+  · Perplexity explained in the [HF docs](https://huggingface.co/docs/transformers/perplexity).

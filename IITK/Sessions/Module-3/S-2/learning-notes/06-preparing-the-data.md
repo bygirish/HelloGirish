@@ -73,6 +73,78 @@ Same content arrives as HTML, Markdown, LaTeX, PDF text, plain text.
 
 ---
 
+## 🧪 Auto-finding mislabeled data in Demo 2 (`sst2-with-cleanlab`)
+
+Demo 2 tackles §6.1(b) — *incorrect labels* — with **[Confident Learning](https://arxiv.org/abs/1911.00068)**
+via the [cleanlab](https://docs.cleanlab.ai/) library. The key insight: to judge whether an
+example's label is wrong, you need the model's prediction on that example **from a model that
+never trained on it** — otherwise the model has just memorized the (possibly wrong) label.
+K-fold cross-validation gives exactly that: *out-of-fold* predictions.
+
+```mermaid
+flowchart TB
+    A["Noisy training set<br/>(10k SST-2 examples)"] --> B["5-fold CV:<br/>train on 4 folds,<br/>predict the held-out fold"]
+    B --> C["Out-of-fold probs<br/>every example scored by a<br/>model that never saw it"]
+    C --> D["cleanlab.find_label_issues<br/>(given label vs. predicted prob)"]
+    D --> E["Ranked list of<br/>suspected mislabels"]
+    E --> F["Remove flagged rows →<br/>retrain → compare accuracy<br/>BEFORE vs AFTER"]
+    style D fill:#ffe0b2,stroke:#e65100
+    style F fill:#c8e6c9,stroke:#1b5e20
+```
+
+**Step 1 — get honest (out-of-fold) probabilities** with `StratifiedKFold`. A *fresh* model
+per fold guarantees no fold leaks into another (note the §6.4 leakage discipline in action):
+
+```python
+from sklearn.model_selection import StratifiedKFold
+from scipy.special import softmax
+
+skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+out_of_fold_probs = np.zeros((len(train_ds), 2))
+
+for fit_idx, holdout_idx in skf.split(all_indices, train_labels):
+    model = BertForSequenceClassification.from_pretrained(MODEL_NAME, num_labels=2)  # fresh each fold
+    trainer = Trainer(model=model, args=fold_args, train_dataset=train_ds.select(fit_idx))
+    trainer.train()
+    # predict ONLY the held-out fold — the model never trained on these rows
+    logits = trainer.predict(train_ds.select(holdout_idx)).predictions
+    out_of_fold_probs[holdout_idx] = softmax(logits, axis=1)
+```
+
+**Step 2 — let cleanlab rank the suspects** from those out-of-fold probabilities:
+
+```python
+from cleanlab.filter import find_label_issues
+
+issue_indices = find_label_issues(
+    labels=np.array(train_ds["label"]),
+    pred_probs=out_of_fold_probs,
+    return_indices_ranked_by="self_confidence",   # most-likely-wrong first
+)
+print("Suspected label issues:", len(issue_indices))
+for idx in issue_indices[:10]:
+    print(f"given={labels[idx]} | probs={out_of_fold_probs[idx]} | {dataset['train'][int(idx)]['sentence']}")
+```
+
+**Step 3 — prove it helped**: remove the flagged rows, retrain, and compare on a clean
+validation set (the demo's before/after A/B):
+
+```python
+clean_idx     = np.where(~label_issue_mask)[0].tolist()   # keep everything NOT flagged
+train_ds_clean = train_ds.select(clean_idx)
+# train_and_eval(train_ds, ...)        → "BEFORE cleanlab"
+# train_and_eval(train_ds_clean, ...)  → "AFTER cleanlab"   ← usually higher val accuracy
+```
+
+> 💡 **Learning Thought:** Two transferable ideas here. **(1)** "Confidence" only means
+> something on data the model *didn't* train on — hence out-of-fold predictions; using
+> in-sample predictions would just rediscover the noisy labels. **(2)** The demo's own
+> recommendation is wise: don't blindly delete *every* flagged row — remove only the
+> top-ranked ones and re-check, because the detector has false positives too. Cleaning labels
+> is a *scalpel, not a bulldozer.*
+
+---
+
 ## 6.2 Challenge 2 — Insufficient Data (Slides 61–63)
 
 Three distinct sub-failures:
@@ -128,8 +200,10 @@ defect detection, churn.
 
 **Mitigations:**
 - **Right metrics** — precision, recall, F1, PR-AUC. *Never plain accuracy on skewed data.*
-- **Resampling** — oversample minority (SMOTE and variants) or undersample majority.
-- **Cost-sensitive learning** — class weights or **focal loss** make minority errors expensive.
+- **Resampling** — oversample minority ([SMOTE](https://arxiv.org/abs/1106.1813) and variants)
+  or undersample majority.
+- **Cost-sensitive learning** — class weights or **[focal loss](https://arxiv.org/abs/1708.02002)**
+  make minority errors expensive.
 
 > 💡 **Learning Thought:** The accuracy paradox is *the* classic interview trap. The instant you
 > hear "imbalanced," your metric must change — accuracy is actively misleading. Reach for
@@ -258,3 +332,27 @@ moving world.* Three kinds of shift:
 contamination), ensure enough *coverage and diversity* (not just volume), fix *imbalance* with
 the right metrics, *split first* to avoid leakage, and treat fine-tuning itself as a deliberate,
 monitored *distribution shift* toward deployment.**
+
+---
+
+## 🔗 Further reading
+
+- **Label errors (Demo 2):** [Confident Learning (Northcutt et al., 2021)](https://arxiv.org/abs/1911.00068),
+  the [cleanlab docs](https://docs.cleanlab.ai/), and [labelerrors.com](https://labelerrors.com/)
+  — a gallery of mislabels found in *ImageNet, MNIST, SST-2* and other "gold" benchmarks.
+- **Deduplication:** [Deduplicating Training Data Makes Language Models Better (Lee et al., 2021)](https://arxiv.org/abs/2107.06499)
+  and [Deduplicating Training Data Mitigates Privacy Risks (Kandpal et al., 2022)](https://arxiv.org/abs/2202.06539)
+  — the memorization/contamination arguments in §6.1(c).
+- **What "cleaning a web corpus" really means:** the [C4 / T5 paper](https://arxiv.org/abs/1910.10683),
+  [The Pile](https://arxiv.org/abs/2101.00027), and [Gopher's data appendix](https://arxiv.org/abs/2112.11446).
+- **Imbalance:** [Focal Loss](https://arxiv.org/abs/1708.02002) · [SMOTE](https://arxiv.org/abs/1106.1813)
+  · [imbalanced-learn library](https://imbalanced-learn.org/) · scikit-learn's
+  [precision/recall & PR-AUC guide](https://scikit-learn.org/stable/auto_examples/model_selection/plot_precision_recall.html).
+- **Leakage & splitting:** [Leakage in Data Mining (Kaufman et al.)](https://dl.acm.org/doi/10.1145/2382577.2382579)
+  and [scikit-learn cross-validation](https://scikit-learn.org/stable/modules/cross_validation.html)
+  (see `GroupKFold`, `TimeSeriesSplit`, `StratifiedKFold` for §6.4).
+- **Distribution shift → why post-training exists:** [InstructGPT (Ouyang et al., 2022)](https://arxiv.org/abs/2203.02155)
+  (the base→chat gap) and the [RAG paper (Lewis et al., 2020)](https://arxiv.org/abs/2005.11401)
+  (grounding in current sources) — the callbacks in §6.5.
+- **Datasheets & model cards:** [Datasheets for Datasets](https://arxiv.org/abs/1803.09010) and
+  [Model Cards](https://arxiv.org/abs/1810.03993) — how to document the coverage/diversity of §6.2.

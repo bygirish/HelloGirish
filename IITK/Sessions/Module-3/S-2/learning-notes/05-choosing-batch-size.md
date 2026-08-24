@@ -41,6 +41,30 @@ $$\textbf{Effective batch} = \text{Micro-batch} \times \text{Grad-accum} \times 
 > small forward/backward passes and only *then* step. This is how a 24 GB consumer GPU can
 > train at an effective batch of 128 that "should" need far more VRAM.
 
+**In HF Trainer, it's two arguments** (effective batch = product of these × #GPUs):
+
+```python
+TrainingArguments(
+    per_device_train_batch_size = 4,     # micro-batch — as big as VRAM allows
+    gradient_accumulation_steps = 8,     # accumulate 8 micro-batches before stepping
+    # → effective batch = 4 × 8 × (num GPUs) = 32 on 1 GPU
+)
+```
+
+**The manual-loop version** makes the mechanic explicit — call `backward()` every micro-batch
+but `step()` only every *k*-th one, and scale the loss by `k` so the gradient is an *average*:
+
+```python
+ACCUM = 8
+for i, batch in enumerate(loader):
+    loss = loss_fn(model(**batch), batch["labels"]) / ACCUM   # scale so grads AVERAGE
+    loss.backward()                                           # accumulates into .grad
+    if (i + 1) % ACCUM == 0:                                  # step once every 8 micro-batches
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)   # clip on the FULL accumulated grad (§2)
+        optimizer.step()
+        optimizer.zero_grad()
+```
+
 ---
 
 ## 5.3 How to select batch size — the procedure (Slide 49)
@@ -80,7 +104,9 @@ Batch size and LR are **coupled** — you cannot tune one in isolation.
 
 > **Increasing batch size usually requires increasing the learning rate.**
 
-**Linear Scaling Rule:** *if the effective batch doubles, the learning rate ≈ doubles.*
+**[Linear Scaling Rule](https://arxiv.org/abs/1706.02677):** *if the effective batch doubles,
+the learning rate ≈ doubles.* (From Goyal et al., *"Accurate, Large Minibatch SGD"* — the
+paper that trained ImageNet in 1 hour and popularized warmup + linear scaling together.)
 
 | Effective Batch | Learning Rate |
 |-----------------|---------------|
@@ -174,3 +200,21 @@ The empirical feedback loop — read the *train loss curve* and adjust:
 use accumulation to hit your target, scale LR with batch (linear rule), and let the loss curve
 referee: jitter → batch too small, high plateau → batch too large (too few of your ≥500–1,000
 needed steps).**
+
+---
+
+## 🔗 Further reading
+
+- **The linear scaling rule:** [Accurate, Large Minibatch SGD (Goyal et al., 2017)](https://arxiv.org/abs/1706.02677)
+  — origin of §5.5, including why you *must* add warmup when scaling LR up.
+- **Batch size vs. generalization:** [On Large-Batch Training for Deep Learning: Generalization
+  Gap and Sharp Minima (Keskar et al., 2017)](https://arxiv.org/abs/1609.04836) — the evidence
+  behind "too big can hurt generalization" in §5.4.
+- **The dual view:** [Don't Decay the Learning Rate, Increase the Batch Size (Smith et al., 2018)](https://arxiv.org/abs/1711.00489)
+  — batch size and LR are two handles on the *same* thing (gradient noise).
+- **Gradient accumulation, practically:** [HF — Methods and tools for efficient training on a single GPU](https://huggingface.co/docs/transformers/perf_train_gpu_one)
+  and [Performance & Scalability](https://huggingface.co/docs/transformers/performance) — memory
+  math, accumulation, checkpointing, and the recent
+  [gradient-accumulation loss-scaling fix](https://huggingface.co/blog/gradient_accumulation).
+- **Critical batch size (when scaling stops helping):** [An Empirical Model of Large-Batch Training (McCandlish et al., 2018)](https://arxiv.org/abs/1812.06162)
+  — introduces the "gradient noise scale" that predicts the largest *useful* batch.

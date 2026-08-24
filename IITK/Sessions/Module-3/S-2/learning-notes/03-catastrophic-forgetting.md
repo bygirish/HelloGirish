@@ -70,6 +70,77 @@ fall. **Always run a fixed general eval suite before and after every fine-tune.*
 
 ---
 
+## 🧪 See it happen — and reverse it — in Demo 3 (`Catastrophic-Forgetting`)
+
+This is the demo that makes the whole section concrete. It uses **one shared DistilBERT
+encoder** with **two task heads** (sentiment = SST-2, topic = AG News), and runs three
+phases. Because both heads share the encoder, training the second task *drags the encoder's
+weights away* from where task 1 needed them — that drift **is** the forgetting.
+
+```mermaid
+flowchart LR
+    P1["Phase 1<br/>Train encoder + SST-2 head<br/>on SST-2"] --> R1["SST-2 acc ≈ 0.83 ✅"]
+    P1 --> P2["Phase 2<br/>Train encoder + AG-News head<br/>on AG News ONLY"]
+    P2 --> R2["AG-News acc high ✅<br/>SST-2 acc DROPS 📉<br/>(encoder drifted = forgot)"]
+    P2 --> P3["Phase 3<br/>Interleave SST-2 + AG-News<br/>batches (rehearsal)"]
+    P3 --> R3["Both accuracies high ✅✅<br/>SST-2 recovered"]
+    style R2 fill:#ffcdd2,stroke:#b71c1c
+    style R3 fill:#c8e6c9,stroke:#1b5e20
+```
+
+**The shared-encoder / two-heads model** — one body, two task-specific outputs:
+
+```python
+class MultiHeadModel(nn.Module):
+    def __init__(self, model_name, n_classes_a=2, n_classes_b=4):
+        super().__init__()
+        self.encoder = AutoModel.from_pretrained(model_name)   # SHARED — this is what drifts
+        hidden = self.encoder.config.hidden_size
+        self.head_sst2   = nn.Linear(hidden, n_classes_a)      # sentiment head
+        self.head_agnews = nn.Linear(hidden, n_classes_b)      # topic head
+
+    def encode(self, input_ids, attention_mask):
+        out = self.encoder(input_ids=input_ids, attention_mask=attention_mask)
+        return out.last_hidden_state[:, 0]                     # [CLS] representation
+```
+
+**Phase 2 is where forgetting is measured** — train AG News only, then check *both* tasks:
+
+```python
+# Phase 2: fine-tune encoder + AG-News head on AG News only (SST-2 head untouched)
+for ep in range(EPOCHS_PER_PHASE):
+    train_one_epoch(agnews_train_loader, model.forward_agnews, optimizer_phase2)
+
+acc_agnews = evaluate(agnews_test_loader, model.forward_agnews)
+acc_sst2   = evaluate(sst2_test_loader,   model.forward_sst2)
+print(f"AG News acc = {acc_agnews:.3f}")
+print(f"SST-2   acc = {acc_sst2:.3f}   <- DROPPED: encoder drifted away from task 1")
+```
+
+**Phase 3 is the fix (rehearsal / §3.4)** — interleave both tasks so the encoder must stay
+good at both. The loss is simply the *sum* of both tasks' losses per step:
+
+```python
+def train_one_epoch_replay(sst2_loader, agnews_loader, optimizer):
+    model.train()
+    for sst2_batch, agnews_batch in zip(sst2_loader, agnews_loader):
+        # ... move both batches to DEVICE ...
+        optimizer.zero_grad()
+        sst2_logits   = model.forward_sst2(s_ids, s_mask)
+        agnews_logits = model.forward_agnews(a_ids, a_mask)
+        loss = loss_fn(sst2_logits, s_labels) + loss_fn(agnews_logits, a_labels)  # ← defend BOTH
+        loss.backward()
+        optimizer.step()
+```
+
+> 💡 **Learning Thought:** DistilBERT here is a *stand-in* for a big LLM's shared weights.
+> The lesson scales exactly: fine-tuning task B on shared parameters silently degrades task
+> A, and **mixing task-A data back in (rehearsal) repairs it** — no architecture change, just
+> the data the gradient sees. The output bar chart (SST-2 vs AG-News accuracy across the three
+> phases) is the picture worth memorizing.
+
+---
+
 ## The six mitigations
 
 Think of these as a *stack* — you'll often use several together. Presented cheapest-first.
@@ -101,9 +172,10 @@ train_ds = interleave_datasets(
 
 **Add a penalty for drifting from initialization.** Attacks the *weight drift* cause.
 
-- **L2-SP:** penalize `‖θ − θ₀‖²` — pull *every* weight back toward its pretrained value.
-  Simple, one hyperparameter (λ).
-- **EWC (Elastic Weight Consolidation):** weight the penalty by **Fisher information `Fᵢ`**,
+- **[L2-SP](https://arxiv.org/abs/1802.01483):** penalize `‖θ − θ₀‖²` — pull *every* weight
+  back toward its pretrained value. Simple, one hyperparameter (λ).
+- **[EWC (Elastic Weight Consolidation)](https://arxiv.org/abs/1612.00796):** weight the
+  penalty by **Fisher information `Fᵢ`**,
   so parameters *important to old tasks* are held tighter than unimportant ones.
 - **Trade-off:** λ too high → underfits the new task; too low → forgets. Tune λ against your
   canary evals.
@@ -150,7 +222,7 @@ args = TrainingArguments(
 )
 ```
 
-### 3.7 Mitigation 4 — Weight averaging (WiSE-FT / merging) (Slide 29)
+### 3.7 Mitigation 4 — Weight averaging ([WiSE-FT](https://arxiv.org/abs/2109.01903) / merging) (Slide 29)
 
 **Fine-tune freely, then interpolate the result back toward the original weights** — recover
 generality *after the fact.* Attacks *lost directions.*
@@ -197,6 +269,39 @@ for block in model.model.layers[-TUNE_TOP:]:
 > general/syntactic features, upper layers learn task-specific/semantic ones.** Freezing the
 > bottom protects the general substrate. It also cuts memory (fewer gradients/optimizer
 > states) — a two-for-one with PEFT-style efficiency.
+
+> 🧪 **From Demo 1 (`LW-BW-P-FT-and-LRs`).** Demo 1 implements *three* freezing schedules as
+> plain `requires_grad` toggles, switched per-epoch by a `TrainerCallback`. Here's the
+> **block-wise** strategy verbatim — freeze everything, then unfreeze exactly one "block" per
+> phase (heads → transformer → embeddings):
+>
+> ```python
+> def set_block_wise_freezing(model, epoch):
+>     for p in model.parameters():
+>         p.requires_grad = False                       # freeze EVERYTHING first
+>     if epoch == 0:
+>         for p in model.heads.parameters():            # only the task heads
+>             p.requires_grad = True
+>     elif epoch in [1, 2]:
+>         for p in model.encoder.transformer.parameters():   # only the transformer body
+>             p.requires_grad = True
+>     else:
+>         for p in model.encoder.embeddings.parameters():    # only the embeddings
+>             p.requires_grad = True
+> ```
+>
+> A HF `TrainerCallback` calls this at the start of each epoch, so the *trainable set*
+> changes as training proceeds:
+>
+> ```python
+> class FreezingScheduleCallback(TrainerCallback):
+>     def on_epoch_begin(self, args, state, control, model=None, **kwargs):
+>         set_block_wise_freezing(model, int(state.epoch))   # re-apply the freeze plan each epoch
+> ```
+>
+> The demo also implements **layer-wise** (unfreeze one *pair* of layers at a time) and
+> **progressive** (keep accumulating unfrozen layers until the whole model thaws) — three
+> flavours of the same idea in §3.8.
 
 ### 3.9 Choosing your mitigation stack (Slide 31)
 
@@ -274,3 +379,23 @@ public data, and it's forgetting. What's your plan?**
 optimum — so *measure a fixed general eval before and after*, keep updates small by default,
 and layer on rehearsal, regularization, freezing, or weight-averaging as the situation
 demands.**
+
+---
+
+## 🔗 Further reading
+
+- **The original phenomenon:** McCloskey & Cohen (1989), *"Catastrophic Interference in
+  Connectionist Networks"* — where the term was coined. Modern LLM evidence:
+  [An Empirical Study of Catastrophic Forgetting in LLMs during Continual Fine-tuning](https://arxiv.org/abs/2308.08747).
+- **Regularization mitigations:** [EWC (Kirkpatrick et al., PNAS 2017)](https://arxiv.org/abs/1612.00796)
+  — the Fisher-weighted penalty in §3.5; [L2-SP (Li et al., 2018)](https://arxiv.org/abs/1802.01483).
+- **Weight averaging:** [WiSE-FT (Wortsman et al., 2022)](https://arxiv.org/abs/2109.01903)
+  and [Model Soups](https://arxiv.org/abs/2203.05482) — the "average two models' weights and
+  it just works" result from §3.7. Background: [Linear Mode Connectivity](https://arxiv.org/abs/1912.05671).
+- **Rehearsal / continual learning survey:** [A Continual Learning Survey (De Lange et al.)](https://arxiv.org/abs/1909.08383)
+  puts rehearsal, regularization, and architectural methods in one taxonomy.
+- **The cheaper alternative that sidesteps most forgetting:** [LoRA (Hu et al., 2021)](https://arxiv.org/abs/2106.09685)
+  and the [HF PEFT library](https://huggingface.co/docs/peft) — freezing the base weights
+  entirely and training tiny adapters is §3.8 taken to its logical extreme.
+- **Hands-on:** [Mergekit](https://github.com/arcee-ai/mergekit) implements WiSE-FT-style
+  interpolation and many other merge recipes you can run today.

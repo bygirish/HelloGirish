@@ -24,6 +24,19 @@ The mental decoder:
 - **Train great, val worsening** → the model is memorizing the training set → *overfitting.*
 - **Both frozen at start value** → gradients aren't flowing at all → *no learning* (a bug).
 
+The four shapes you'll actually see, sketched (`—` train, `·` validation):
+
+```
+ UNDERFIT (high bias)      OVERFIT (high variance)     NO LEARNING (bug)        HEALTHY ✅
+ loss                       loss                        loss                     loss
+  │——————————  train         │·····                      │———————————— train      │—
+  │··········  val           │····  ···· val (↑)          │———————————— val        │ —·
+  │  (both high, flat)       │——__        train           │  (both flat at         │  —··
+  │                          │    ——___   (→0)            │   START value)         │   ——··____
+  └──────────────► step      └──────────────► step        └──────────────► step    └────────────► step
+                                 ↑ stop at val min ↑                                 small stable gap
+```
+
 > 💡 **Learning Thought — the bias/variance lens:**
 > - **Underfitting = high bias:** the model is too simple / under-trained to capture the signal.
 >   Fix by training *more* / bigger LR / more capacity / less regularization.
@@ -84,6 +97,50 @@ came from):
 
 ---
 
+## 7.4 🧪 Plotting the two curves yourself (Demo 1)
+
+You don't need a fancy tool — the HF `Trainer` records everything you need in
+`trainer.state.log_history`, and Demo 1 just reads it back with matplotlib. **Training loss**
+is logged every `logging_steps`; **validation loss** is logged once per epoch (because
+`eval_strategy="epoch"`):
+
+```python
+import matplotlib.pyplot as plt
+
+# --- training-loss curve (per-step) — this is the noisy line you watch for the TREND ---
+log = trainer.state.log_history
+steps  = [e["step"] for e in log if "loss" in e]
+losses = [e["loss"] for e in log if "loss" in e]
+plt.plot(steps, losses, label="train loss")
+
+# --- validation-loss curve (per-epoch) — the HONEST generalization signal ---
+val_epochs = [e["epoch"]     for e in log if "eval_loss" in e]
+val_losses = [e["eval_loss"] for e in log if "eval_loss" in e]
+plt.plot(val_epochs, val_losses, marker="o", label="val loss")
+plt.xlabel("step / epoch"); plt.ylabel("loss"); plt.legend(); plt.show()
+```
+
+To make §7.2's *"stop at the validation minimum"* automatic instead of eyeballing it, let the
+Trainer keep the best checkpoint for you:
+
+```python
+TrainingArguments(
+    eval_strategy = "epoch",          # or "steps" with eval_steps=N for finer resolution
+    save_strategy = "epoch",          # must match eval cadence
+    load_best_model_at_end = True,    # ← restore the checkpoint at min val loss
+    metric_for_best_model  = "eval_loss",
+    greater_is_better = False,
+)
+# add callbacks=[EarlyStoppingCallback(early_stopping_patience=2)] to also stop early
+```
+
+> 💡 **Learning Thought:** `load_best_model_at_end=True` *is* the golden stopping rule turned
+> into a config flag. It silently gives you back the weights from the epoch where val loss
+> bottomed — even if you trained past it. Combined with `EarlyStoppingCallback`, you both stop
+> wasting compute *and* ship the right checkpoint, with zero manual curve-reading.
+
+---
+
 ## 🎯 Interview Questions
 
 **Q1. You have training and validation loss curves. How do you diagnose the run?**
@@ -132,6 +189,23 @@ loss plots *not* show, and what do you add?**
 **Train loss reads *bias* (absolute level), the train–val gap reads *variance* (widening =
 overfit), both-flat-at-start means a *bug* — so watch two curves, and stop exactly at the
 validation-loss minimum, because that's where learning ends and memorizing begins.**
+
+---
+
+## 🔗 Further reading
+
+- **Bias–variance, visually:** [scikit-learn — Underfitting vs. Overfitting](https://scikit-learn.org/stable/auto_examples/model_selection/plot_underfitting_overfitting.html)
+  and [Validation curves](https://scikit-learn.org/stable/modules/learning_curve.html) — the
+  §7.1 shapes on real models you can rerun.
+- **Early stopping done right:** [HF — EarlyStoppingCallback](https://huggingface.co/docs/transformers/main_classes/callback#transformers.EarlyStoppingCallback)
+  and the classic [Prechelt, "Early Stopping — But When?"](https://link.springer.com/chapter/10.1007/978-3-642-35289-8_5).
+- **Experiment tracking:** [Weights & Biases](https://docs.wandb.ai/) and
+  [TensorBoard](https://www.tensorflow.org/tensorboard) — plot train/val loss and grad-norm
+  live; `report_to="wandb"` in `TrainingArguments` wires it up in one line.
+- **When the textbook curve breaks:** [Deep Double Descent (Nakkiran et al., 2019)](https://arxiv.org/abs/1912.02292)
+  — val loss can go *down → up → down again*, complicating "stop at the first minimum."
+- **Debugging "no learning":** [Karpathy — A Recipe for Training Neural Networks](https://karpathy.github.io/2019/04/25/recipe/)
+  and [Troubleshooting Deep Neural Networks (Josh Tobin)](http://josh-tobin.com/troubleshooting-deep-neural-networks.html).
 
 ---
 

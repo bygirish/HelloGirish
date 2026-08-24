@@ -37,11 +37,23 @@ same structure:
 
 ### The 3 hands-on notebooks
 
-| Notebook | Topic | Reinforces |
-|----------|-------|-----------|
-| Demo 1 — `LW-BW-P-FT-and-LRs` | Layer/Block/Progressive FT + LR schedules | Sections 1 & 4 |
-| Demo 2 — `sst2-with-cleanlab` | Finding label errors with confident learning | Section 6 |
-| Demo 3 — `Catastrophic-Forgetting` | Measuring & mitigating forgetting | Section 3 |
+Each section now has a **🧪 block** that pulls the *actual code* from these notebooks so you
+can connect theory to a runnable line. Where the real snippet lives:
+
+| Notebook | Topic | Reinforces | Real code appears in |
+|----------|-------|-----------|----------------------|
+| Demo 1 — `LW-BW-P-FT-and-LRs` | Layer/Block/Progressive FT + LR schedules | Sections 1, 3, 4, 7 | §3.8 (freezing), §4.6 (scheduler A/B), §7.4 (plotting) |
+| Demo 2 — `sst2-with-cleanlab` | Finding label errors with confident learning | Section 6 | §6.1 (k-fold OOF + cleanlab) |
+| Demo 3 — `Catastrophic-Forgetting` | Measuring & mitigating forgetting | Sections 1, 3 | §1.1 (training loop), §3.3 (forget→replay demo) |
+
+> **Running them:** all three are Colab-ready. They install `transformers`, `datasets`,
+> `evaluate`, `cleanlab` and pull models/data from the Hugging Face Hub (`distilbert-base-uncased`,
+> `bert-base-uncased`, SST-2 / AG News / CoLA / STS-B). A free Colab T4 GPU is enough — they use
+> small subsets (2k–10k examples) so each finishes in minutes.
+
+> **Seeing the diagrams:** the `mermaid` flowcharts render automatically on **GitHub** and in
+> **VS Code** with the *Markdown Preview Mermaid Support* extension. The ASCII diagrams render
+> everywhere. Open any `.md` in VS Code and press `Cmd+K V` for a live preview.
 
 ---
 
@@ -56,3 +68,25 @@ Everything else in this lecture is a lens on that one sentence:
 - **Batch size** (§5) = controlling step **noise**.
 - **Data prep** (§6) = making sure the downhill direction points somewhere **worth going**.
 - **Loss curves** (§7) = reading the **feedback** to know which of the above is wrong.
+
+---
+
+## 🔗 Global resources (start here if you want the big picture first)
+
+Each section file ends with its own focused **🔗 Further reading**. These are the broad,
+cross-cutting resources for the *whole* topic of fine-tuning:
+
+- **Andrej Karpathy — [Neural Networks: Zero to Hero](https://karpathy.ai/zero-to-hero.html):**
+  the best free course for genuinely understanding §1's training loop from scratch.
+- **Hugging Face — [LLM Course](https://huggingface.co/learn/llm-course) & [Trainer docs](https://huggingface.co/docs/transformers/main_classes/trainer):**
+  the library every demo here uses; the `TrainingArguments` reference is your knob catalog for
+  §2, §4, §5, §7.
+- **Sebastian Raschka — [Blog](https://magazine.sebastianraschka.com/) & [*Build a Large Language
+  Model (From Scratch)*](https://github.com/rasbt/LLMs-from-scratch):** superb, practical,
+  frequently-updated writing on fine-tuning, LoRA, and instabilities.
+- **[The Novice's LLM Training Guide](https://rentry.org/llm-training)** and
+  **[Weights & Biases — LLM fine-tuning guides](https://wandb.ai/site/articles):** end-to-end,
+  hands-on walkthroughs that touch every section here.
+- **[Hugging Face PEFT](https://huggingface.co/docs/peft)** & **[LoRA paper](https://arxiv.org/abs/2106.09685):**
+  the parameter-efficient methods that make most of §2/§3/§5's pain cheaper to manage — the
+  natural "Part III" after these notes.

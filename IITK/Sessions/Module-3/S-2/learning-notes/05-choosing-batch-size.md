@@ -203,6 +203,42 @@ needed steps).**
 
 ---
 
+## Storage requirement on processing a batch
+
+```
+# STEP 1: Forward Pass
+logits = model(batch.input_ids)  # input_ids shape: (32, 512) for 32 samples
+loss = loss_fn(logits, batch.labels)
+
+# Memory at this point:
+# ✓ Model Weights: 14 GB (7B params in float16)
+# ✓ Activations (h1, h2, ...): 25 GB (stored from each layer)
+# ✓ Batch data (input_ids, labels): ~1 GB
+# Total: ~40 GB VRAM
+
+# STEP 2: Backward Pass
+loss.backward()  # Compute ∂L/∂W using stored activations
+
+# Memory at this point (same as above):
+# ✓ Model Weights: 14 GB
+# ✓ Activations: 25 GB (still needed for gradient computation)
+# ✓ Gradients: 14 GB (computed, temporary)
+# Total: ~53 GB VRAM (peak memory usage)
+
+# STEP 3: Update Weights
+optimizer.step()  # W = W - lr * ∂L/∂W
+
+# STEP 4: Clear
+optimizer.zero_grad()  # Delete gradients, clear for next batch
+
+# Memory after step 4:
+# ✓ Model Weights: 14 GB (updated)
+# ✗ Activations: gone
+# ✗ Gradients: gone
+# Total: ~14 GB (back to baseline)
+
+```
+---
 ## 🔗 Further reading
 
 - **The linear scaling rule:** [Accurate, Large Minibatch SGD (Goyal et al., 2017)](https://arxiv.org/abs/1706.02677)

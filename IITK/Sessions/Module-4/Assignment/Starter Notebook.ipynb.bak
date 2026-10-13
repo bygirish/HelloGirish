@@ -1,0 +1,1346 @@
+{
+  "cells": [
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "ov0HMVGm_-KA"
+      },
+      "source": [
+        "# <font color=\"blue\"><b>Vision-Language Models: From Zero-Shot Applications to Fine-Tuning and Multimodal RAG</b></font>\n",
+        "\n",
+        "---\n",
+        "\n",
+        "## Problem Statement\n",
+        "\n",
+        "Vision-Language Models (VLMs) let a single model read an image and text together — answering\n",
+        "questions about a photo, transcribing and reasoning over a scanned document, or retrieving the\n",
+        "right image for a query. In this assignment you will work with **Qwen2.5-VL-3B-Instruct** across\n",
+        "four progressively harder settings:\n",
+        "\n",
+        "1. **Zero-shot applications** — VQA, captioning, chain-of-thought counting, and document\n",
+        "   intelligence (OCR-VQA + document understanding), all built on the same\n",
+        "   `messages → apply_chat_template → generate` pattern used in Lecture 2.\n",
+        "2. **Parameter-efficient fine-tuning** — attach 4-bit + LoRA adapters (as in Lecture 1) and\n",
+        "   fine-tune on the VQA dataset, then compare answers **before vs after** fine-tuning.\n",
+        "3. **Multimodal RAG** — build a small mixed-domain image corpus (CIFAR-10 + DocVQA +\n",
+        "   InfographicVQA), extract OCR + captions, index it two ways (FAISS text embeddings and ColPali\n",
+        "   visual late-interaction), fuse the two rankings with **Reciprocal Rank Fusion (RRF)**, and\n",
+        "   generate a grounded answer — exactly the Lecture 3 pipeline.\n",
+        "\n",
+        "The notebook is organised into twelve numbered steps. Steps 1–3 (imports & seed, dataset +\n",
+        "model loading, GPU helpers) are **provided** and carry no marks; the graded steps sum to **100**.\n",
+        "\n",
+        "## Resources and Runtime\n",
+        "\n",
+        "- Run this notebook in **Google Colab** with a **T4 GPU** (`Runtime → Change runtime type → GPU`).\n",
+        "- The notebook installs all Python packages itself (`transformers`, `qwen-vl-utils`, `peft`,\n",
+        "  `trl`, `bitsandbytes`, `easyocr`, `colpali-engine`, `faiss-cpu`, `sentence-transformers`).\n",
+        "- All datasets and models are public and downloaded by code — no API key, login, or Drive mount\n",
+        "  is required.\n",
+        "- A small image subset and short training run are used deliberately so everything finishes in\n",
+        "  one Colab session.\n",
+        "\n",
+        "## What You Must Submit\n",
+        "\n",
+        "Submit one completed `.ipynb`. Every `## CODE HERE ##` placeholder and every **[Your Answer]**\n",
+        "reflection must be completed, and all outputs (generations, plots, tables, retrieved images)\n",
+        "must remain visible. The notebook must run top to bottom after a runtime restart.\n",
+        "\n",
+        "## Assessment Principles\n",
+        "\n",
+        "- The prompt for every generation task must use `processor.apply_chat_template(...,\n",
+        "  add_generation_prompt=True)` — never a hand-built special-token string.\n",
+        "- LoRA fine-tuning must use a 4-bit NF4 backbone (`BitsAndBytesConfig`) with a `bf16` compute\n",
+        "  dtype, matching the Lecture 1 hands-on recipe, so it fits a free T4.\n",
+        "- The **same** three sample questions must be used for the before/after fine-tuning comparison\n",
+        "  in Step 8, and the **same** evaluation queries must be used across FAISS, ColPali, and RRF in\n",
+        "  Step 11, so the comparisons are fair.\n",
+        "- Written answers must cite your own measured numbers, generations, and retrieved results —\n",
+        "  not generic descriptions.\n",
+        "- Equivalent correct implementations are accepted; copying hard-coded outputs is not.\n"
+      ],
+      "id": "ov0HMVGm_-KA"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "-tATBUKK_-KJ"
+      },
+      "source": [
+        "### <font color=\"blue\"><b>Step 1: Imports, Installs and Seed</b></font>  *(provided — just run)*\n",
+        "\n",
+        "Install the packages this notebook needs and import everything used throughout. A single seed\n",
+        "is fixed across `random`, NumPy and PyTorch so sampling and shuffling are reproducible.\n",
+        "\n",
+        "> `# ── PROVIDED ──` This cell is written for you. Run it and move on."
+      ],
+      "id": "-tATBUKK_-KJ"
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {
+        "id": "uunWtBXi_-KL"
+      },
+      "outputs": [],
+      "source": [
+        "# ============================================================\n",
+        "#  Step 1: Installs, Imports and Seed\n",
+        "# ---PROVIDED ------------------------------------------------\n",
+        "# ============================================================\n",
+        "!pip install -q datasets sentence-transformers faiss-cpu easyocr\n",
+        "!pip install -q -U \"colpali-engine>=0.3.1\"\n",
+        "!pip install -q -U git+https://github.com/huggingface/trl.git bitsandbytes peft qwen-vl-utils\n",
+        "\n",
+        "# Colab ships an old torchao that peft's import check rejects (ImportError: incompatible\n",
+        "# torchao version). Nothing here needs torchao, so just remove it rather than upgrading it.\n",
+        "!pip uninstall -y -q torchao\n",
+        "\n",
+        "import os, gc, math, time, random, warnings\n",
+        "import numpy as np\n",
+        "import pandas as pd\n",
+        "import matplotlib.pyplot as plt\n",
+        "from pathlib import Path\n",
+        "\n",
+        "import torch\n",
+        "from PIL import Image\n",
+        "from datasets import load_dataset\n",
+        "from transformers import (\n",
+        "    Qwen2_5_VLForConditionalGeneration, AutoProcessor, AutoTokenizer,\n",
+        "    BitsAndBytesConfig,\n",
+        ")\n",
+        "from qwen_vl_utils import process_vision_info\n",
+        "from peft import LoraConfig, get_peft_model, PeftModel\n",
+        "from trl import SFTTrainer, SFTConfig\n",
+        "\n",
+        "warnings.filterwarnings(\"ignore\")\n",
+        "os.environ[\"HF_HUB_DISABLE_PROGRESS_BARS\"] = \"1\"\n",
+        "\n",
+        "SEED = 42\n",
+        "def seed_everything(seed=SEED):\n",
+        "    random.seed(seed); np.random.seed(seed); torch.manual_seed(seed)\n",
+        "    if torch.cuda.is_available():\n",
+        "        torch.cuda.manual_seed_all(seed)\n",
+        "seed_everything()\n",
+        "\n",
+        "DEVICE = \"cuda\" if torch.cuda.is_available() else \"cpu\"\n",
+        "print(\"Device:\", DEVICE)\n",
+        "if DEVICE == \"cuda\":\n",
+        "    print(\"GPU:\", torch.cuda.get_device_name(0))\n"
+      ],
+      "id": "uunWtBXi_-KL"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "GuMFhy8j_-KR"
+      },
+      "source": [
+        "### <font color=\"blue\"><b>Step 2: Dataset and Model Loading</b></font>  *(provided — just run)*\n",
+        "\n",
+        "Load the three datasets used in the zero-shot / fine-tuning half of the notebook\n",
+        "(`miniVQAv2` for VQA + LoRA, `Quantity-Reasoning-VQA-23K` for chain-of-thought counting,\n",
+        "`DocVQA` for document intelligence), and load `Qwen2.5-VL-3B-Instruct` with its processor.\n",
+        "\n",
+        "> `# ── PROVIDED ──` This cell is written for you. Run it and move on."
+      ],
+      "id": "GuMFhy8j_-KR"
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {
+        "id": "no2G8LsJ_-KS"
+      },
+      "outputs": [],
+      "source": [
+        "# ============================================================\n",
+        "#  Step 2: Dataset and Model Loading\n",
+        "# ---PROVIDED ------------------------------------------------\n",
+        "# ============================================================\n",
+        "MODEL_ID = \"Qwen/Qwen2.5-VL-3B-Instruct\"\n",
+        "\n",
+        "vqa_dataset  = load_dataset(\"dutta18/miniVQAv2DatasetForCollab\", split=\"train\")\n",
+        "qty_dataset  = load_dataset(\"dutta18/Quantity-Reasoning-VQA-23K\", split=\"val[:100]\")\n",
+        "docvqa_data  = load_dataset(\"lmms-lab-encoder/DocVQA\", \"DocVQA\", split=\"test[:100]\")\n",
+        "\n",
+        "model = Qwen2_5_VLForConditionalGeneration.from_pretrained(\n",
+        "    MODEL_ID,\n",
+        "    dtype=torch.bfloat16,\n",
+        "    attn_implementation=\"sdpa\",\n",
+        "    device_map=\"auto\",\n",
+        ")\n",
+        "\n",
+        "min_pixels = 256 * 28 * 28\n",
+        "max_pixels = 512 * 28 * 28\n",
+        "processor = AutoProcessor.from_pretrained(\n",
+        "    MODEL_ID, min_pixels=min_pixels, max_pixels=max_pixels, use_fast=True\n",
+        ")\n",
+        "\n",
+        "print(\"Model + processor ready.\")\n",
+        "print(\"VQA:\", vqa_dataset, \"\\nQuantity-Reasoning:\", qty_dataset, \"\\nDocVQA:\", docvqa_data)\n"
+      ],
+      "id": "no2G8LsJ_-KS"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "rsjDajPP_-Ka"
+      },
+      "source": [
+        "### <font color=\"blue\"><b>Step 3: Helper Functions</b></font>  *(provided — just run)*\n",
+        "\n",
+        "Small utilities reused across the notebook: `free_memory` (VRAM cleanup between model loads)\n",
+        "and `count_trainable` (trainable-vs-total parameter counts, used after attaching LoRA).\n",
+        "\n",
+        "> `# ── PROVIDED ──` This cell is written for you. Run it and move on."
+      ],
+      "id": "rsjDajPP_-Ka"
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {
+        "id": "14r8ZjTe_-Kc"
+      },
+      "outputs": [],
+      "source": [
+        "# ============================================================\n",
+        "#  Step 3: Helper Functions\n",
+        "# ---PROVIDED ------------------------------------------------\n",
+        "# ============================================================\n",
+        "def free_memory(*names):\n",
+        "    # Free GPU + RAM. Pass names of globals to delete first: free_memory(\"model\").\n",
+        "    # empty_cache() can only release memory with no live references left, so anything\n",
+        "    # still held by a variable, by the last exception's traceback, or by Jupyter's\n",
+        "    # output history must be dropped first.\n",
+        "    import sys\n",
+        "\n",
+        "    # Delete the named globals in the CALLER's namespace (the notebook).\n",
+        "    caller_globals = sys._getframe(1).f_globals\n",
+        "    for name in names:\n",
+        "        caller_globals.pop(name, None)\n",
+        "\n",
+        "    # An OOM (or any) exception keeps its traceback alive, and that traceback keeps\n",
+        "    # every local variable in every frame alive -- including big tensors.\n",
+        "    sys.last_traceback = None\n",
+        "    sys.last_value = None\n",
+        "    sys.last_type = None\n",
+        "\n",
+        "    # Jupyter/Colab pins the result of every past cell in Out[] / _oh and in _, __, ___.\n",
+        "    # Clear those exact containers by hand -- do NOT use %reset_selective here, its\n",
+        "    # argument is a REGEX and a pattern like \"_\" silently deletes every global whose\n",
+        "    # name contains an underscore (MODEL_ID, vqa_dataset, ...).\n",
+        "    try:\n",
+        "        ip = get_ipython()\n",
+        "        for store in (\"Out\", \"_oh\"):\n",
+        "            obj = ip.user_ns.get(store)\n",
+        "            if isinstance(obj, dict):\n",
+        "                obj.clear()\n",
+        "        for hist in (\"_\", \"__\", \"___\", \"_i\", \"_ii\", \"_iii\"):\n",
+        "            if hist in ip.user_ns:\n",
+        "                ip.user_ns[hist] = None\n",
+        "    except NameError:\n",
+        "        pass  # not running under IPython\n",
+        "\n",
+        "    gc.collect()\n",
+        "    gc.collect()  # second pass catches objects freed by the first (reference cycles)\n",
+        "\n",
+        "    if torch.cuda.is_available():\n",
+        "        torch.cuda.empty_cache()\n",
+        "        torch.cuda.ipc_collect()\n",
+        "        torch.cuda.reset_peak_memory_stats()\n",
+        "        print(f\"GPU memory: {torch.cuda.memory_allocated()/1e9:.2f} GB allocated | \"\n",
+        "              f\"{torch.cuda.memory_reserved()/1e9:.2f} GB reserved\")\n",
+        "\n",
+        "def count_trainable(m):\n",
+        "    trainable = sum(p.numel() for p in m.parameters() if p.requires_grad)\n",
+        "    total = sum(p.numel() for p in m.parameters())\n",
+        "    return trainable, total, 100 * trainable / total\n",
+        "\n",
+        "print(\"Helpers ready.\")\n"
+      ],
+      "id": "14r8ZjTe_-Kc"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "xLRFEJY5_-Kf"
+      },
+      "source": [
+        "## <font color=\"blue\"><b>Step 4: Zero-Shot Visual Question Answering</b></font>  <font color=\"red\">**[9 marks]**</font>\n"
+      ],
+      "id": "xLRFEJY5_-Kf"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "dHBDLFn8_-Kh"
+      },
+      "source": [
+        "Build the standard VLM inference pipeline: a `messages` list with an image + text\n",
+        "turn, rendered through `processor.apply_chat_template(..., add_generation_prompt=True)`, fed to\n",
+        "`processor(...)`, and decoded after `model.generate(...)`. Wrap this in a reusable\n",
+        "`vqa_generate(image, question)` function and run it on **3 samples** from `vqa_dataset`."
+      ],
+      "id": "dHBDLFn8_-Kh"
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {
+        "id": "dkqvQ5nq_-Ki"
+      },
+      "outputs": [],
+      "source": [
+        "# ============================================================\n",
+        "#  Step 4.1: Zero-Shot VQA\n",
+        "# ============================================================\n",
+        "def vqa_generate(image, question, max_new_tokens=128):\n",
+        "    messages = [\n",
+        "        {\n",
+        "            \"role\": \"user\",\n",
+        "            \"content\": [\n",
+        "                ## CODE HERE ## (image content dict)\n",
+        "                ## CODE HERE ## (text content dict, using `question`)\n",
+        "            ],\n",
+        "        }\n",
+        "    ]\n",
+        "\n",
+        "    ## CODE HERE ##\n",
+        "    # 1. text = processor.apply_chat_template(...)\n",
+        "    # 2. image_inputs, video_inputs = process_vision_info(messages)\n",
+        "    # 3. inputs = processor(text=[text], images=image_inputs, videos=video_inputs,\n",
+        "    #                        padding=True, return_tensors=\"pt\").to(model.device)\n",
+        "    # 4. generated_ids = model.generate(**inputs, max_new_tokens=max_new_tokens)\n",
+        "    # 5. trim the prompt tokens off `generated_ids` before decoding\n",
+        "\n",
+        "    return output_text\n",
+        "\n",
+        "\n",
+        "# ---- Run on 3 samples ----\n",
+        "# Cache the base-model answers now, while the base model is loaded. Step 8 compares\n",
+        "# against these instead of reloading the 7 GB base model next to the fine-tuned one.\n",
+        "SAMPLE_IDS = [1, 10, 25]\n",
+        "BASE_ANSWERS = {}\n",
+        "\n",
+        "for idx in SAMPLE_IDS:\n",
+        "    image = vqa_dataset[\"image\"][idx]\n",
+        "    question = vqa_dataset[\"question\"][idx]\n",
+        "    BASE_ANSWERS[idx] = vqa_generate(image, question)\n",
+        "    print(f\"[{idx}] Q: {question}\")\n",
+        "    print(\"A:\", BASE_ANSWERS[idx])\n",
+        "    print(\"-\" * 60)\n"
+      ],
+      "id": "dkqvQ5nq_-Ki"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "WJXFyY2v_-Kk"
+      },
+      "source": [
+        "### ✍️ Step 4 Reflection  <font color=\"red\">**[3 marks]**</font>\n",
+        "**[Your Answer]** must cover:\n",
+        "- What each element of the `messages` list represents, and why `apply_chat_template` is used instead of hand-writing special tokens. <font color=\"red\">**[1]**</font>\n",
+        "- The three generations you printed — do they look correct given the images and questions? <font color=\"red\">**[1]**</font>\n",
+        "- Why the prompt tokens must be trimmed off `generated_ids` before decoding. <font color=\"red\">**[1]**</font>\n"
+      ],
+      "id": "WJXFyY2v_-Kk"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "20xnqFZ2_-Kk"
+      },
+      "source": [
+        "## <font color=\"blue\"><b>Step 5: Captioning and Chain-of-Thought Reasoning</b></font>  <font color=\"red\">**[14 marks]**</font>\n"
+      ],
+      "id": "20xnqFZ2_-Kk"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "nH_OSaUI_-Kl"
+      },
+      "source": [
+        "### <font color=\"blue\"><b>Step 5.1: Image Captioning</b></font>  <font color=\"red\">**[5 marks]**</font>\n"
+      ],
+      "id": "nH_OSaUI_-Kl"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "CWrzRZYD_-Km"
+      },
+      "source": [
+        "Write a captioning **system prompt** that asks for a descriptive, visually-grounded\n",
+        "caption (no hallucinated detail), then extend `vqa_generate`-style inference to accept a system\n",
+        "prompt. Run it on **3 images** from `vqa_dataset`."
+      ],
+      "id": "CWrzRZYD_-Km"
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {
+        "id": "pEiDsWsS_-Km"
+      },
+      "outputs": [],
+      "source": [
+        "# ============================================================\n",
+        "#  Step 5.1: Captioning\n",
+        "# ============================================================\n",
+        "captioning_system_prompt = \"\"\"\n",
+        "## CODE HERE ##  (a captioning instruction: descriptive, visually-grounded, no hallucinated detail)\n",
+        "\"\"\"\n",
+        "\n",
+        "def generate_with_system(system_prompt, image, question=None, max_new_tokens=256):\n",
+        "    content = [{\"type\": \"image\", \"image\": image}]\n",
+        "    ## CODE HERE ##  (append a text content dict to `content` ONLY if `question` is given)\n",
+        "\n",
+        "    messages = [\n",
+        "        {\"role\": \"system\", \"content\": system_prompt},\n",
+        "        {\"role\": \"user\", \"content\": content},\n",
+        "    ]\n",
+        "    ## CODE HERE ##  (same 5-step generate/decode pipeline as Step 4)\n",
+        "\n",
+        "    return output_text\n",
+        "\n",
+        "\n",
+        "for idx in [5, 40, 81]:\n",
+        "    image = vqa_dataset[\"image\"][idx]\n",
+        "    print(f\"[{idx}] Caption:\", generate_with_system(captioning_system_prompt, image))\n",
+        "    print(\"-\" * 60)\n"
+      ],
+      "id": "pEiDsWsS_-Km"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "2kb1zrJK_-Km"
+      },
+      "source": [
+        "### <font color=\"blue\"><b>Step 5.2: Chain-of-Thought Counting</b></font>  <font color=\"red\">**[5 marks]**</font>\n"
+      ],
+      "id": "2kb1zrJK_-Km"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "ahKKukp7_-Kn"
+      },
+      "source": [
+        "Using `qty_dataset` (object-counting questions), write a **direct-answer** system\n",
+        "prompt and a **chain-of-thought** system prompt that reasons region-by-region before giving a\n",
+        "final count. Run both on the **same 2 images** and compare."
+      ],
+      "id": "ahKKukp7_-Kn"
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {
+        "id": "iyqV-FHZ_-Kn"
+      },
+      "outputs": [],
+      "source": [
+        "# ============================================================\n",
+        "#  Step 5.2: Chain-of-Thought Counting\n",
+        "# ============================================================\n",
+        "direct_system_prompt = \"## CODE HERE ##\"  # answer with only the final number, no explanation\n",
+        "\n",
+        "cot_system_prompt = \"\"\"\n",
+        "## CODE HERE ##\n",
+        "# A counting assistant that reasons step by step:\n",
+        "# breaks the image into regions, counts within each, sums them,\n",
+        "# and states \"Hence, the final answer is N.\"\n",
+        "\"\"\"\n",
+        "\n",
+        "for idx in [17, 35]:\n",
+        "    question = qty_dataset[\"question\"][idx]\n",
+        "    image = qty_dataset[\"image\"][idx]\n",
+        "\n",
+        "    print(f\"[{idx}] Q: {question}\")\n",
+        "    print(\"Direct:\", generate_with_system(direct_system_prompt, image, question))\n",
+        "    print(\"CoT:\", generate_with_system(cot_system_prompt, image, question, max_new_tokens=400))\n",
+        "    print(\"=\" * 60)\n"
+      ],
+      "id": "iyqV-FHZ_-Kn"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "EDoYdszQ_-Kn"
+      },
+      "source": [
+        "### ✍️ Step 5 Reflection  <font color=\"red\">**[4 marks]**</font>\n",
+        "**[Your Answer]** must cover:\n",
+        "- What makes a captioning system prompt \"visually grounded\" and how it reduces hallucination. <font color=\"red\">**[1]**</font>\n",
+        "- Cite the direct-vs-CoT outputs for both images — did CoT reasoning change the final count, and was it more accurate? <font color=\"red\">**[2]**</font>\n",
+        "- One case (from your own runs) where CoT still got the count wrong, and why long reasoning does not guarantee correctness. <font color=\"red\">**[1]**</font>\n"
+      ],
+      "id": "EDoYdszQ_-Kn"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "StE3T4uN_-Kn"
+      },
+      "source": [
+        "## <font color=\"blue\"><b>Step 6: Document Intelligence</b></font>  <font color=\"red\">**[10 marks]**</font>\n"
+      ],
+      "id": "StE3T4uN_-Kn"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "G9vlGDmm_-Kn"
+      },
+      "source": [
+        "Reuse `generate_with_system` for two document tasks on `docvqa_data`: (a)\n",
+        "**OCR-VQA** — answer a specific question about a document image, and (b) **document\n",
+        "understanding** — produce a structured summary of everything visible in a document (headings,\n",
+        "tables, key numbers) without being asked a specific question."
+      ],
+      "id": "G9vlGDmm_-Kn"
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {
+        "id": "Liqpqz2p_-Ko"
+      },
+      "outputs": [],
+      "source": [
+        "# ============================================================\n",
+        "#  Step 6: Document Intelligence\n",
+        "# ============================================================\n",
+        "doc_qa_system_prompt = \"\"\"\n",
+        "## CODE HERE ##\n",
+        "# An OCR + document-QA assistant: read all visible text, understand layout/structure,\n",
+        "# then answer the user's question using only information present in the document.\n",
+        "\"\"\"\n",
+        "\n",
+        "doc_summary_system_prompt = \"\"\"\n",
+        "## CODE HERE ##\n",
+        "# A document-understanding assistant: OCR the full document, then present ALL visible\n",
+        "# information (headings, paragraphs, tables, labels, numbers) in an organised summary,\n",
+        "# without answering any specific question.\n",
+        "\"\"\"\n",
+        "\n",
+        "# ---- OCR-VQA: answer a specific question ----\n",
+        "for idx in [30, 90]:\n",
+        "    question = docvqa_data[\"question\"][idx]\n",
+        "    image = docvqa_data[\"image\"][idx]\n",
+        "    print(f\"[{idx}] Q: {question}\")\n",
+        "    print(\"A:\", generate_with_system(doc_qa_system_prompt, image, question))\n",
+        "    print(\"-\" * 60)\n",
+        "\n",
+        "# ---- Document Understanding: full summary, no question ----\n",
+        "for idx in [50]:\n",
+        "    image = docvqa_data[\"image\"][idx]\n",
+        "    print(f\"[{idx}] Summary:\", generate_with_system(doc_summary_system_prompt, image, max_new_tokens=512))\n"
+      ],
+      "id": "Liqpqz2p_-Ko"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "ZphuLSbM_-Ko"
+      },
+      "source": [
+        "### ✍️ Step 6 Reflection  <font color=\"red\">**[4 marks]**</font>\n",
+        "**[Your Answer]** must cover:\n",
+        "- How the OCR-VQA prompt differs from the document-understanding prompt, and why the latter must not \"answer a question\" that wasn't asked. <font color=\"red\">**[2]**</font>\n",
+        "- Whether the OCR-VQA answers matched the ground truth in `docvqa_data['answers']` for your two samples — quote them. <font color=\"red\">**[1]**</font>\n",
+        "- One failure you observed (misread number, missed table, wrong field) and a likely cause. <font color=\"red\">**[1]**</font>\n"
+      ],
+      "id": "ZphuLSbM_-Ko"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "reUQaEUY_-Kp"
+      },
+      "source": [
+        "## <font color=\"blue\"><b>Step 7: LoRA Fine-Tuning Setup and Training</b></font>  <font color=\"red\">**[22 marks]**</font>\n"
+      ],
+      "id": "reUQaEUY_-Kp"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "36IwM07c_-Kp"
+      },
+      "source": [
+        "## Free the Base VLM Before Fine-Tuning\n"
+      ],
+      "id": "36IwM07c_-Kp"
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {
+        "id": "mDBC4i25_-Kp"
+      },
+      "outputs": [],
+      "source": [
+        "# The base `model` is not needed during fine-tuning. Free it so the 4-bit `ft_model`,\n",
+        "# LoRA adapters, optimizer state and training activations all fit on a T4.\n",
+        "# Step 8 compares against BASE_ANSWERS (cached in Step 4), so the base model is not\n",
+        "# reloaded until Step 9.\n",
+        "free_memory(\"model\")\n"
+      ],
+      "id": "mDBC4i25_-Kp"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "98xF93uf_-Kp"
+      },
+      "source": [
+        "### <font color=\"blue\"><b>Step 7.1: 4-bit Backbone, LoRA Config, Collator and Trainer</b></font>  <font color=\"red\">**[10 marks]**</font>\n"
+      ],
+      "id": "98xF93uf_-Kp"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "csxHRCRF_-Kq"
+      },
+      "source": [
+        "Set up parameter-efficient fine-tuning exactly as in the Lecture 1 hands-on:\n",
+        "load a **4-bit NF4** backbone (`BitsAndBytesConfig`), attach a `LoraConfig` targeting the\n",
+        "attention + MLP projections, write a `custom_data_collator` that turns `(image, question)`\n",
+        "pairs into a model-ready batch with `labels`, and wrap it all in an `SFTTrainer` /\n",
+        "`SFTConfig`."
+      ],
+      "id": "csxHRCRF_-Kq"
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {
+        "id": "jDCj9iQk_-Kq"
+      },
+      "outputs": [],
+      "source": [
+        "# ============================================================\n",
+        "#  Step 7.1: 4-bit Backbone + LoRA Config + Collator + Trainer\n",
+        "# ============================================================\n",
+        "bnb_config = BitsAndBytesConfig(\n",
+        "    ## CODE HERE ##  (load_in_4bit, double_quant, quant_type=\"nf4\", compute_dtype=bfloat16)\n",
+        ")\n",
+        "\n",
+        "ft_model = Qwen2_5_VLForConditionalGeneration.from_pretrained(\n",
+        "    MODEL_ID,\n",
+        "    device_map=\"auto\",\n",
+        "    dtype=torch.bfloat16,\n",
+        "    quantization_config=bnb_config,\n",
+        ")\n",
+        "\n",
+        "peft_config = LoraConfig(\n",
+        "    ## CODE HERE ##\n",
+        "    # lora_alpha, lora_dropout, r, bias=\"none\",\n",
+        "    # target_modules covering q_proj/k_proj/v_proj/o_proj (+ MLP projections if you like),\n",
+        "    # task_type=\"CAUSAL_LM\"\n",
+        ")\n",
+        "\n",
+        "def custom_data_collator(samples):\n",
+        "    batch_messages = []\n",
+        "    for sample in samples:\n",
+        "        ## CODE HERE ##\n",
+        "        # Build a `messages` list: one user turn with an image content dict\n",
+        "        # and a text content dict from sample[\"question\"].\n",
+        "        batch_messages.append(messages)\n",
+        "\n",
+        "    batch_text = [\n",
+        "        processor.apply_chat_template(m, tokenize=False, add_generation_prompt=True)\n",
+        "        for m in batch_messages\n",
+        "    ]\n",
+        "    batch_images = [m[0][\"content\"][0][\"image\"] for m in batch_messages]\n",
+        "\n",
+        "    model_inputs = processor(text=batch_text, images=batch_images, padding=True, return_tensors=\"pt\")\n",
+        "    ## CODE HERE ##  (model_inputs[\"labels\"] = a clone of input_ids)\n",
+        "    return model_inputs\n",
+        "\n",
+        "\n",
+        "training_args = SFTConfig(\n",
+        "    output_dir=\"qwen_vqa_lora\",\n",
+        "    num_train_epochs=1,\n",
+        "    per_device_train_batch_size=2,\n",
+        "    gradient_accumulation_steps=2,\n",
+        "    gradient_checkpointing_kwargs={\"use_reentrant\": False},\n",
+        "    max_length=None,\n",
+        "    optim=\"adamw_torch_fused\",\n",
+        "    learning_rate=2e-4,\n",
+        "    logging_steps=5,\n",
+        "    save_strategy=\"no\",\n",
+        "    remove_unused_columns=False,\n",
+        "    bf16=True,\n",
+        "    report_to=\"none\",\n",
+        ")\n",
+        "\n",
+        "trainer = SFTTrainer(\n",
+        "    model=ft_model,\n",
+        "    args=training_args,\n",
+        "    train_dataset=vqa_dataset,\n",
+        "    peft_config=peft_config,\n",
+        "    data_collator=custom_data_collator,\n",
+        ")\n",
+        "\n",
+        "trainable, total, pct = count_trainable(trainer.model)\n",
+        "print(f\"Trainable: {trainable:,} / {total:,} ({pct:.3f}%)\")\n"
+      ],
+      "id": "jDCj9iQk_-Kq"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "XVvv883F_-Kr"
+      },
+      "source": [
+        "### <font color=\"blue\"><b>Step 7.2: Run Training and Plot Loss</b></font>  <font color=\"red\">**[6 marks]**</font>\n"
+      ],
+      "id": "XVvv883F_-Kr"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "9YpEBWTd_-K3"
+      },
+      "source": [
+        "Train, then plot the per-logging-step loss from `trainer.state.log_history`."
+      ],
+      "id": "9YpEBWTd_-K3"
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {
+        "id": "Vr4HaASy_-K6"
+      },
+      "outputs": [],
+      "source": [
+        "# ============================================================\n",
+        "#  Step 7.2: Train + Loss Curve\n",
+        "# ============================================================\n",
+        "## CODE HERE ##  (trainer.train())\n",
+        "\n",
+        "## CODE HERE ##\n",
+        "# Pull \"loss\" entries out of trainer.state.log_history and plot loss vs step.\n"
+      ],
+      "id": "Vr4HaASy_-K6"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "SdeTrAcB_-K8"
+      },
+      "source": [
+        "### ✍️ Step 7 Reflection  <font color=\"red\">**[6 marks]**</font>\n",
+        "**[Your Answer]** must cover:\n",
+        "- Each `BitsAndBytesConfig` setting in plain language, and why the compute dtype is `bfloat16` here (T4/L4 hands-on convention). <font color=\"red\">**[2]**</font>\n",
+        "- Your `LoraConfig` choices (`r`, `lora_alpha`, `target_modules`) and the measured trainable-parameter percentage. <font color=\"red\">**[2]**</font>\n",
+        "- What the collator's `labels = input_ids.clone()` line means for what the model is trained to predict, and why `remove_unused_columns=False` is required here. <font color=\"red\">**[1]**</font>\n",
+        "- What the loss curve shows — did it fall smoothly, and does it look like more epochs would keep helping? <font color=\"red\">**[1]**</font>\n"
+      ],
+      "id": "SdeTrAcB_-K8"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "suM7FHN4_-K9"
+      },
+      "source": [
+        "## <font color=\"blue\"><b>Step 8: Before vs After Fine-Tuning</b></font>  <font color=\"red\">**[9 marks]**</font>\n"
+      ],
+      "id": "suM7FHN4_-K9"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "D6xPHMZF_-K9"
+      },
+      "source": [
+        "Using the **same 3 VQA samples from Step 4**, compare the base model's answers\n",
+        "(already printed in Step 4) against the fine-tuned model's answers. Build a small\n",
+        "`vqa_generate_ft` using the trained `trainer.model` (a `PeftModel`) and print the answers\n",
+        "side by side."
+      ],
+      "id": "D6xPHMZF_-K9"
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {
+        "id": "-sThDMcG_-K-"
+      },
+      "outputs": [],
+      "source": [
+        "# ============================================================\n",
+        "#  Step 8.1: Before vs After Comparison\n",
+        "# ============================================================\n",
+        "def vqa_generate_ft(image, question, max_new_tokens=128):\n",
+        "    ## CODE HERE ##\n",
+        "    # Same pipeline as `vqa_generate`, but call trainer.model.generate(...) instead of\n",
+        "    # the original `model`.\n",
+        "    return output_text\n",
+        "\n",
+        "\n",
+        "# Base answers come from the Step 4 cache (BASE_ANSWERS) so the base model does not\n",
+        "# have to sit in GPU memory next to the fine-tuned one.\n",
+        "for idx in SAMPLE_IDS:\n",
+        "    image = vqa_dataset[\"image\"][idx]\n",
+        "    question = vqa_dataset[\"question\"][idx]\n",
+        "    print(f\"[{idx}] Q: {question}\")\n",
+        "    print(\"  Base      :\", BASE_ANSWERS[idx])\n",
+        "    print(\"  Fine-tuned:\", vqa_generate_ft(image, question))\n",
+        "    print(\"-\" * 60)\n"
+      ],
+      "id": "-sThDMcG_-K-"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "-Wjfamgw_-K-"
+      },
+      "source": [
+        "### ✍️ Step 8 Reflection  <font color=\"red\">**[4 marks]**</font>\n",
+        "**[Your Answer]** must cover:\n",
+        "- Cite the base-vs-fine-tuned answers for all 3 samples — did fine-tuning change style, correctness, or both? <font color=\"red\">**[2]**</font>\n",
+        "- Whether one epoch on this small subset was enough to see a clear change, and what you'd try if not (more epochs, higher rank, larger subset). <font color=\"red\">**[2]**</font>\n"
+      ],
+      "id": "-Wjfamgw_-K-"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "V1ziaB64_-LD"
+      },
+      "source": [
+        "## Free the Fine-Tuning Artifacts and Reload the Base VLM\n"
+      ],
+      "id": "V1ziaB64_-LD"
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {
+        "id": "CGDSwh5P_-LE"
+      },
+      "outputs": [],
+      "source": [
+        "# Fine-tuning is done. Drop the optimizer state first (it is often as large as the\n",
+        "# adapters themselves), then free the trainer and the 4-bit model.\n",
+        "if \"trainer\" in globals() and getattr(trainer, \"optimizer\", None) is not None:\n",
+        "    trainer.optimizer.zero_grad(set_to_none=True)\n",
+        "    trainer.optimizer = None\n",
+        "free_memory(\"trainer\", \"ft_model\")\n",
+        "\n",
+        "# Step 9 captions every RAG image with the base VLM, so load it back now.\n",
+        "model = Qwen2_5_VLForConditionalGeneration.from_pretrained(\n",
+        "    MODEL_ID, dtype=torch.bfloat16, attn_implementation=\"sdpa\", device_map=\"auto\",\n",
+        ")\n"
+      ],
+      "id": "CGDSwh5P_-LE"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "xhPCrcyg_-LI"
+      },
+      "source": [
+        "## <font color=\"blue\"><b>Step 9: Multimodal Dataset and Extraction</b></font>  <font color=\"red\">**[8 marks]**</font>\n"
+      ],
+      "id": "xhPCrcyg_-LI"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "AHWuVy17_-LI"
+      },
+      "source": [
+        "Build a small mixed-domain image corpus for the RAG pipeline: **20 CIFAR-10**,\n",
+        "**20 DocVQA**, and **20 InfographicVQA** images (as in Lecture 3), each stored as a dict with\n",
+        "`id`, `source`, `label`, `image`. Then extract, per image, an **EasyOCR** text pass and a\n",
+        "caption (reuse `generate_with_system` with a short captioning prompt in place of Florence-2),\n",
+        "and combine both into a `combined_text` field."
+      ],
+      "id": "AHWuVy17_-LI"
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {
+        "id": "arTuaRFx_-LJ"
+      },
+      "outputs": [],
+      "source": [
+        "# ============================================================\n",
+        "#  Step 9.1: Unified Dataset + OCR + Captions\n",
+        "# ============================================================\n",
+        "CIFAR_LABELS = {0:\"airplane\",1:\"automobile\",2:\"bird\",3:\"cat\",4:\"deer\",\n",
+        "                5:\"dog\",6:\"frog\",7:\"horse\",8:\"ship\",9:\"truck\"}\n",
+        "\n",
+        "cifar = load_dataset(\"uoft-cs/cifar10\", split=\"train[:20]\")\n",
+        "infography = load_dataset(\"lmms-lab-encoder/DocVQA\", \"InfographicVQA\", split=\"validation[:20]\")\n",
+        "docvqa_small = load_dataset(\"lmms-lab-encoder/DocVQA\", \"DocVQA\", split=\"validation[:20]\")\n",
+        "\n",
+        "RAG_DATASET = []\n",
+        "## CODE HERE ##\n",
+        "# Append 20 CIFAR-10 items: {\"id\", \"source\": \"cifar10\", \"label\": CIFAR_LABELS[...],\n",
+        "#                            \"image\": item[\"img\"].convert(\"RGB\")}\n",
+        "# Append 20 DocVQA items:   {\"id\", \"source\": \"docvqa\", \"label\": \"document\",\n",
+        "#                            \"image\": item[\"image\"].convert(\"RGB\"), \"question\": item[\"question\"]}\n",
+        "# Append 20 InfographicVQA items similarly with source \"infographic\"\n",
+        "\n",
+        "print(f\"Built RAG_DATASET with {len(RAG_DATASET)} images\")\n",
+        "\n",
+        "# ---- EasyOCR ----\n",
+        "import easyocr\n",
+        "ocr_reader = easyocr.Reader([\"en\"], gpu=torch.cuda.is_available(), verbose=False)\n",
+        "\n",
+        "def run_ocr(image):\n",
+        "    results = ocr_reader.readtext(np.array(image), detail=1, paragraph=False)\n",
+        "    ## CODE HERE ##  (keep texts with confidence > 0.4, join with a space)\n",
+        "    return text\n",
+        "\n",
+        "for item in RAG_DATASET:\n",
+        "    item[\"ocr_text\"] = run_ocr(item[\"image\"])\n",
+        "\n",
+        "# ---- Captioning (reuse Step 5's system prompt) ----\n",
+        "for item in RAG_DATASET:\n",
+        "    ## CODE HERE ##\n",
+        "    # item[\"caption\"] = generate_with_system(captioning_system_prompt, item[\"image\"], max_new_tokens=60)\n",
+        "    pass\n",
+        "\n",
+        "# ---- Combine ----\n",
+        "for item in RAG_DATASET:\n",
+        "    ## CODE HERE ##  (item[\"combined_text\"] = caption + \" \" + ocr_text, stripped)\n",
+        "    pass\n",
+        "\n",
+        "print(RAG_DATASET[0][\"combined_text\"])\n"
+      ],
+      "id": "arTuaRFx_-LJ"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "ZBYWfiFQ_-LK"
+      },
+      "source": [
+        "### ✍️ Step 9 Reflection  <font color=\"red\">**[2 marks]**</font>\n",
+        "**[Your Answer]** must cover:\n",
+        "- Why the pipeline extracts BOTH a caption and OCR text, instead of just one, giving an example image where OCR alone returns nothing. <font color=\"red\">**[1]**</font>\n",
+        "- One risk of using a VLM caption to build a retrieval index (e.g. missed detail, hallucinated content). <font color=\"red\">**[1]**</font>\n"
+      ],
+      "id": "ZBYWfiFQ_-LK"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "eoWGbVw6_-LK"
+      },
+      "source": [
+        "## Free the Base VLM Before Loading ColPali\n"
+      ],
+      "id": "eoWGbVw6_-LK"
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {
+        "id": "x_Ehlo09_-LK"
+      },
+      "outputs": [],
+      "source": [
+        "# Captioning is done. `model` is not needed again until Step 11.2, so free it to make\n",
+        "# room for ColPali's patch embeddings alongside the FAISS text index.\n",
+        "free_memory(\"model\")\n"
+      ],
+      "id": "x_Ehlo09_-LK"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "E_A931Al_-LL"
+      },
+      "source": [
+        "## <font color=\"blue\"><b>Step 10: Dual Retrieval: FAISS Text Index and ColPali Visual Index</b></font>  <font color=\"red\">**[12 marks]**</font>\n"
+      ],
+      "id": "E_A931Al_-LL"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "84vCiOxn_-LL"
+      },
+      "source": [
+        "### <font color=\"blue\"><b>Step 10.1: Sentence Embeddings + FAISS</b></font>  <font color=\"red\">**[4 marks]**</font>\n"
+      ],
+      "id": "84vCiOxn_-LL"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "R02j53gD_-LL"
+      },
+      "source": [
+        "Embed every image's `combined_text` with `all-mpnet-base-v2`, build a FAISS\n",
+        "`IndexFlatIP` (cosine similarity via normalised inner product), and write a `text_retrieve`\n",
+        "function. Sanity-check it with a text query."
+      ],
+      "id": "R02j53gD_-LL"
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {
+        "id": "rhaoU1UW_-LM"
+      },
+      "outputs": [],
+      "source": [
+        "# ============================================================\n",
+        "#  Step 10.1: FAISS Text Retrieval\n",
+        "# ============================================================\n",
+        "import faiss\n",
+        "from sentence_transformers import SentenceTransformer\n",
+        "\n",
+        "st_model = SentenceTransformer(\"sentence-transformers/all-mpnet-base-v2\", device=DEVICE)\n",
+        "\n",
+        "combined_texts = [item[\"combined_text\"] for item in RAG_DATASET]\n",
+        "## CODE HERE ##\n",
+        "# text_embeddings = st_model.encode(..., normalize_embeddings=True, convert_to_numpy=True).astype(\"float32\")\n",
+        "\n",
+        "dim = text_embeddings.shape[1]\n",
+        "## CODE HERE ##  (build faiss.IndexFlatIP(dim) and add text_embeddings)\n",
+        "\n",
+        "def text_retrieve(query, top_k=5):\n",
+        "    ## CODE HERE ##\n",
+        "    # encode the query the same way, search the index, return list of (idx, score)\n",
+        "    return list(zip(indices[0].tolist(), scores[0].tolist()))\n",
+        "\n",
+        "print(text_retrieve(\"a fluffy pet animal\", top_k=5))\n"
+      ],
+      "id": "rhaoU1UW_-LM"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "x6x9sh9K_-LN"
+      },
+      "source": [
+        "### <font color=\"blue\"><b>Step 10.2: ColPali Visual Index</b></font>  <font color=\"red\">**[4 marks]**</font>\n"
+      ],
+      "id": "x6x9sh9K_-LN"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "WBCghGQ1_-LN"
+      },
+      "source": [
+        "Load `vidore/colpali-v1.3`, embed every image as a set of patch vectors, and write\n",
+        "`colpali_retrieve` using **MaxSim** late interaction. Visualise the MaxSim relevance as a\n",
+        "heatmap over one retrieved image's patches."
+      ],
+      "id": "WBCghGQ1_-LN"
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {
+        "id": "t-oQys_y_-LO"
+      },
+      "outputs": [],
+      "source": [
+        "# ============================================================\n",
+        "#  Step 10.2: ColPali Visual Retrieval\n",
+        "# ============================================================\n",
+        "from colpali_engine.models import ColPali, ColPaliProcessor\n",
+        "\n",
+        "colpali_model = ColPali.from_pretrained(\"vidore/colpali-v1.3\", dtype=torch.bfloat16, device_map=\"cuda:0\")\n",
+        "colpali_proc = ColPaliProcessor.from_pretrained(\"vidore/colpali-v1.3\")\n",
+        "colpali_model.eval()\n",
+        "\n",
+        "def embed_images_colpali(images, batch_size=2):\n",
+        "    all_embs = []\n",
+        "    ## CODE HERE ##\n",
+        "    # For each batch: colpali_proc.process_images(batch) -> move tensors to GPU ->\n",
+        "    # torch.inference_mode(): colpali_model(**inputs) -> move to CPU, append per-image tensors\n",
+        "    return all_embs\n",
+        "\n",
+        "colpali_image_embeddings = embed_images_colpali([item[\"image\"] for item in RAG_DATASET])\n",
+        "\n",
+        "def colpali_retrieve(query, top_k=5):\n",
+        "    ## CODE HERE ##\n",
+        "    # 1. colpali_proc.process_queries([query]) -> GPU -> colpali_model(**inputs)[0] -> CPU\n",
+        "    # 2. MaxSim(query_emb, image_emb) for every image: (query_emb @ image_emb.T).max(dim=1).values.sum()\n",
+        "    # 3. sort descending, return top_k (idx, score) pairs\n",
+        "    return results\n",
+        "\n",
+        "print(colpali_retrieve(\"a fluffy pet animal\", top_k=5))\n"
+      ],
+      "id": "t-oQys_y_-LO"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "pH22JuEI_-LP"
+      },
+      "source": [
+        "### ✍️ Step 10 Reflection  <font color=\"red\">**[4 marks]**</font>\n",
+        "**[Your Answer]** must cover:\n",
+        "- Why cosine similarity is achieved here by inner product on normalised vectors, and what `IndexFlatIP` computes. <font color=\"red\">**[1]**</font>\n",
+        "- What MaxSim does conceptually (per query-token best-matching patch, summed) and why it can catch detail that captions/OCR miss. <font color=\"red\">**[2]**</font>\n",
+        "- Cite one query where FAISS and ColPali's top-1 results DIFFER — which retriever got it right and why. <font color=\"red\">**[1]**</font>\n"
+      ],
+      "id": "pH22JuEI_-LP"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "DAmn1Ffy_-LP"
+      },
+      "source": [
+        "## <font color=\"blue\"><b>Step 11: RRF Fusion and Grounded Generation</b></font>  <font color=\"red\">**[12 marks]**</font>\n"
+      ],
+      "id": "DAmn1Ffy_-LP"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "EUAV1eXT_-LP"
+      },
+      "source": [
+        "### <font color=\"blue\"><b>Step 11.1: Reciprocal Rank Fusion</b></font>  <font color=\"red\">**[4 marks]**</font>\n"
+      ],
+      "id": "EUAV1eXT_-LP"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "J02U7I3T_-LR"
+      },
+      "source": [
+        "Implement `rrf_retrieve` combining the FAISS and ColPali rankings with **Reciprocal\n",
+        "Rank Fusion**: RRF(d) = Σ 1/(k + rank_r(d)), k=60. Compare FAISS-only, ColPali-only, and RRF\n",
+        "top-3 for the same query."
+      ],
+      "id": "J02U7I3T_-LR"
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {
+        "id": "pnnG1XrS_-LR"
+      },
+      "outputs": [],
+      "source": [
+        "# ============================================================\n",
+        "#  Step 11.1: Reciprocal Rank Fusion\n",
+        "# ============================================================\n",
+        "def rrf_retrieve(query, top_k=5, k=60):\n",
+        "    n = len(RAG_DATASET)\n",
+        "    text_results = text_retrieve(query, top_k=n)\n",
+        "    colpali_results = colpali_retrieve(query, top_k=n)\n",
+        "\n",
+        "    ## CODE HERE ##\n",
+        "    # 1. Build {idx: rank} dicts (rank starts at 1) for both result lists.\n",
+        "    # 2. rrf_scores[idx] = 1/(k + text_rank.get(idx, n+1)) + 1/(k + colpali_rank.get(idx, n+1))\n",
+        "    #    for every idx in range(n)\n",
+        "    # 3. sort descending by rrf score, return top_k (idx, score) pairs\n",
+        "    return fused[:top_k]\n",
+        "\n",
+        "test_query = \"a fluffy pet animal\"\n",
+        "print(\"FAISS  :\", text_retrieve(test_query, top_k=3))\n",
+        "print(\"ColPali:\", colpali_retrieve(test_query, top_k=3))\n",
+        "print(\"RRF    :\", rrf_retrieve(test_query, top_k=3))\n"
+      ],
+      "id": "pnnG1XrS_-LR"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "LZU-BgUc_-LS"
+      },
+      "source": [
+        "### <font color=\"blue\"><b>Step 11.2: Grounded Generation and Retrieval Accuracy</b></font>  <font color=\"red\">**[4 marks]**</font>\n"
+      ],
+      "id": "LZU-BgUc_-LS"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "dF8gDEd2_-LT"
+      },
+      "source": [
+        "Build 10 evaluation queries (one per CIFAR-10 label present + a few real DocVQA\n",
+        "questions with a known `target_idx`). For each query, retrieve top-3 with FAISS, ColPali and\n",
+        "RRF, and compute **hit@3** (was `target_idx` in the top-3?) for each retriever. Then generate a\n",
+        "grounded answer for one query using `vqa_generate` on the top-1 RRF image, constrained to\n",
+        "\"answer only from the image, say 'Not visible' if absent."
+      ],
+      "id": "dF8gDEd2_-LT"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "11UXm3xD_-LT"
+      },
+      "source": [
+        "## Reload the VLM for Grounded Generation\n"
+      ],
+      "id": "11UXm3xD_-LT"
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {
+        "id": "dR4Pp-CK_-LU"
+      },
+      "outputs": [],
+      "source": [
+        "# Grounded generation needs the base VLM back alongside the already-loaded ColPali index.\n",
+        "model = Qwen2_5_VLForConditionalGeneration.from_pretrained(\n",
+        "    MODEL_ID, dtype=torch.bfloat16, attn_implementation=\"sdpa\", device_map=\"auto\",\n",
+        ")\n"
+      ],
+      "id": "dR4Pp-CK_-LU"
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {
+        "id": "A4fp82at_-LU"
+      },
+      "outputs": [],
+      "source": [
+        "# ============================================================\n",
+        "#  Step 11.2: Grounded Generation + Retrieval Accuracy\n",
+        "# ============================================================\n",
+        "EVAL_QUERIES = []\n",
+        "## CODE HERE ##\n",
+        "# Build EVAL_QUERIES: list of {\"query\": ..., \"target_idx\": idx} using\n",
+        "#   - one query per distinct CIFAR-10 label (\"a photo of a {label}\")\n",
+        "#   - a few DocVQA/infographic items' own \"question\" field, target_idx = that item's id\n",
+        "\n",
+        "def hit_at_k(retrieve_fn, queries, k=3):\n",
+        "    ## CODE HERE ##\n",
+        "    # For each query, run retrieve_fn(q[\"query\"], top_k=k), check if q[\"target_idx\"]\n",
+        "    # is among the returned indices; return the fraction of hits.\n",
+        "    return hits / len(queries)\n",
+        "\n",
+        "# Cache the scores -- Step 12 reuses them instead of re-running every retrieval.\n",
+        "HIT_RESULTS = {\n",
+        "    \"FAISS\":   hit_at_k(text_retrieve, EVAL_QUERIES),\n",
+        "    \"ColPali\": hit_at_k(colpali_retrieve, EVAL_QUERIES),\n",
+        "    \"RRF\":     hit_at_k(rrf_retrieve, EVAL_QUERIES),\n",
+        "}\n",
+        "for _name, _score in HIT_RESULTS.items():\n",
+        "    print(f\"{_name:8s} hit@3: {_score:.2f}\")\n",
+        "\n",
+        "# ---- Grounded generation on one query ----\n",
+        "grounded_prompt = \"Answer ONLY using what is visible in the provided image. Say 'Not visible' if the answer is not present.\"\n",
+        "demo_query = EVAL_QUERIES[0][\"query\"]\n",
+        "top1_idx, _ = rrf_retrieve(demo_query, top_k=1)[0]\n",
+        "print(\"Query:\", demo_query)\n",
+        "print(\"Answer:\", generate_with_system(grounded_prompt, RAG_DATASET[top1_idx][\"image\"], demo_query))\n"
+      ],
+      "id": "A4fp82at_-LU"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "c9hB6xDL_-LU"
+      },
+      "source": [
+        "### ✍️ Step 11 Reflection  <font color=\"red\">**[4 marks]**</font>\n",
+        "**[Your Answer]** must cover:\n",
+        "- Explain the RRF formula in your own words and why it needs no score normalisation across retrievers. <font color=\"red\">**[1]**</font>\n",
+        "- Cite the three hit@3 numbers — which retriever performed best overall, and did RRF beat BOTH individual retrievers or just average them? <font color=\"red\">**[2]**</font>\n",
+        "- Why the grounded system prompt reduces hallucination risk compared to an unconstrained \"answer the question\" prompt. <font color=\"red\">**[1]**</font>\n"
+      ],
+      "id": "c9hB6xDL_-LU"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "bYLGR77R_-LU"
+      },
+      "source": [
+        "## <font color=\"blue\"><b>Step 12: Final Synthesis</b></font>  <font color=\"red\">**[4 marks]**</font>\n"
+      ],
+      "id": "bYLGR77R_-LU"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "yKgju7Z9_-LV"
+      },
+      "source": [
+        "Bring the whole notebook together in one comparison. Build a small table/chart\n",
+        "covering: (a) zero-shot vs fine-tuned quality signal from Step 8, and (b) hit@3 for FAISS,\n",
+        "ColPali and RRF from Step 11."
+      ],
+      "id": "yKgju7Z9_-LV"
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {
+        "id": "CFwxHWsa_-LV"
+      },
+      "outputs": [],
+      "source": [
+        "# ============================================================\n",
+        "#  Step 12: Final Synthesis\n",
+        "# ============================================================\n",
+        "retrieval_summary = pd.DataFrame({\n",
+        "    \"retriever\": [\"FAISS\", \"ColPali\", \"RRF\"],\n",
+        "    \"hit_at_3\": [\n",
+        "        ## CODE HERE ##  (reuse the cached HIT_RESULTS values from Step 11.2)\n",
+        "    ],\n",
+        "})\n",
+        "print(retrieval_summary)\n",
+        "\n",
+        "## CODE HERE ##\n",
+        "# Bar chart of hit_at_3 by retriever.\n"
+      ],
+      "id": "CFwxHWsa_-LV"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "j-iF-998_-LV"
+      },
+      "source": [
+        "### ✍️ Step 12 Reflection  <font color=\"red\">**[2 marks]**</font>\n",
+        "**[Your Answer]** must cover:\n",
+        "- Which method gave the best BALANCE across the notebook (zero-shot quality, fine-tuning gain, retrieval accuracy) on a free Colab GPU, citing your numbers. <font color=\"red\">**[1]**</font>\n",
+        "- One thing you would change with more time/compute (bigger fine-tuning subset, more epochs, higher LoRA rank, larger RAG corpus). <font color=\"red\">**[1]**</font>\n"
+      ],
+      "id": "j-iF-998_-LV"
+    }
+  ],
+  "metadata": {
+    "kernelspec": {
+      "display_name": "Python 3",
+      "language": "python",
+      "name": "python3"
+    },
+    "language_info": {
+      "name": "python",
+      "version": "3.10"
+    },
+    "colab": {
+      "provenance": [],
+      "gpuType": "T4"
+    },
+    "accelerator": "GPU"
+  },
+  "nbformat": 4,
+  "nbformat_minor": 5
+}
